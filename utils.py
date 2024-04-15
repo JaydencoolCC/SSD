@@ -10,7 +10,7 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 # Label map
 voc_labels = ('aeroplane', 'bicycle', 'bird', 'boat', 'bottle', 'bus', 'car', 'cat', 'chair', 'cow', 'diningtable',
               'dog', 'horse', 'motorbike', 'person', 'pottedplant', 'sheep', 'sofa', 'train', 'tvmonitor')
-label_map = {k: v + 1 for v, k in enumerate(voc_labels)}
+label_map = {k: v + 1 for v, k in enumerate(voc_labels)} # In the dataset, background is 0
 label_map['background'] = 0
 rev_label_map = {v: k for k, v in label_map.items()}  # Inverse mapping
 
@@ -78,7 +78,7 @@ def create_data_lists(voc07_path, voc12_path, output_folder):
                 continue
             n_objects += len(objects)
             train_objects.append(objects)
-            train_images.append(os.path.join(path, 'JPEGImages', id + '.jpg'))
+            train_images.append(os.path.join(path, 'JPEGImages', id + '.jpg')) #file path
 
     assert len(train_objects) == len(train_images)
 
@@ -231,8 +231,8 @@ def calculate_mAP(det_boxes, det_labels, det_scores, true_boxes, true_labels, tr
             max_overlap, ind = torch.max(overlaps.squeeze(0), dim=0)  # (), () - scalars
 
             # 'ind' is the index of the object in these image-level tensors 'object_boxes', 'object_difficulties'
-            # In the original class-level tensors 'true_class_boxes', etc., 'ind' corresponds to object with index...
-            original_ind = torch.LongTensor(range(true_class_boxes.size(0)))[true_class_images == this_image][ind]
+            # In the original class-level tensors 'true_class_boxes', etc., 'ind' corresponds to object with index...            
+            original_ind = torch.LongTensor(range(true_class_boxes.size(0))).to(device)[true_class_images == this_image][ind]
             # We need 'original_ind' to update 'true_class_boxes_detected'
 
             # If the maximum overlap is greater than the threshold of 0.5, it's a match
@@ -713,3 +713,141 @@ def clip_gradient(optimizer, grad_clip):
         for param in group['params']:
             if param.grad is not None:
                 param.grad.data.clamp_(-grad_clip, grad_clip)
+                
+
+def calculate_gt(det_boxes, det_labels, det_scores, true_boxes, true_labels, true_difficulties):
+
+    assert len(det_boxes) == len(det_labels) == len(det_scores) == len(true_boxes) == len(
+        true_labels) == len(
+        true_difficulties)  # these are all lists of tensors of the same length, i.e. number of images
+    n_classes = len(label_map)
+
+    # Store all (true) objects in a single continuous tensor while keeping track of the image it is from
+    true_images = list()
+    for i in range(len(true_labels)):
+        true_images.extend([i] * true_labels[i].size(0))
+        
+    true_images = torch.LongTensor(true_images).to(
+        device)  # (n_objects), n_objects is the total no. of objects across all images
+    
+    true_boxes = torch.cat(true_boxes, dim=0)  # (n_objects, 4)
+    true_labels = torch.cat(true_labels, dim=0)  # (n_objects)
+    true_difficulties = torch.cat(true_difficulties, dim=0)  # (n_objects)
+
+    assert true_images.size(0) == true_boxes.size(0) == true_labels.size(0)
+
+    # Store all detections in a single continuous tensor while keeping track of the image it is from
+    det_images = list()
+    for i in range(len(det_labels)):
+        det_images.extend([i] * det_labels[i].size(0)) # from 0 to n
+        
+    det_images = torch.LongTensor(det_images).to(device)  # (n_detections)
+    det_boxes = torch.cat(det_boxes, dim=0)  # (n_detections, 4)
+    det_labels = torch.cat(det_labels, dim=0)  # (n_detections)
+    det_scores = torch.cat(det_scores, dim=0)  # (n_detections)
+        
+    assert det_images.size(0) == det_boxes.size(0) == det_labels.size(0) == det_scores.size(0)
+
+    results = [] #存储结果
+    
+    # Calculate APs for each class (except background)
+    average_precisions = torch.zeros((n_classes - 1), dtype=torch.float)  # (n_classes - 1)
+    for c in range(1, n_classes):     
+        # Extract only objects with this class
+        true_class_images = true_images[true_labels == c]  # (n_class_objects)
+        true_class_boxes = true_boxes[true_labels == c]  # (n_class_objects, 4)
+        true_class_difficulties = true_difficulties[true_labels == c]  # (n_class_objects)
+        n_easy_class_objects = (1 - true_class_difficulties).sum().item()  # ignore difficult objects
+
+        # Keep track of which true objects with this class have already been 'detected'
+        # So far, none
+        true_class_boxes_detected = torch.zeros((true_class_difficulties.size(0)), dtype=torch.uint8).to(
+            device)  # (n_class_objects)
+
+        # Extract only detections with this class
+        det_class_images = det_images[det_labels == c]  # (n_class_detections)
+        det_class_boxes = det_boxes[det_labels == c]  # (n_class_detections, 4)
+        det_class_scores = det_scores[det_labels == c]  # (n_class_detections)
+        n_class_detections = det_class_boxes.size(0)
+        if n_class_detections == 0:
+            continue
+
+        # Sort detections in decreasing order of confidence/scores
+        det_class_scores, sort_ind = torch.sort(det_class_scores, dim=0, descending=True)  # (n_class_detections)
+        det_class_images = det_class_images[sort_ind]  # (n_class_detections)
+        det_class_boxes = det_class_boxes[sort_ind]  # (n_class_detections, 4)
+
+        # In the order of decreasing scores, check if true or false positive
+        true_positives = torch.zeros((n_class_detections), dtype=torch.float).to(device)  # (n_class_detections)
+        false_positives = torch.zeros((n_class_detections), dtype=torch.float).to(device)  # (n_class_detections)
+        
+        for d in range(n_class_detections):
+            result = {}
+            this_detection_box = det_class_boxes[d].unsqueeze(0)  # (1, 4)
+            this_image = det_class_images[d]  # (), scalar
+            
+            result['image_id'] = this_image
+            result['score'] = det_class_scores[d]
+            
+            # Find objects in the same image with this class, their difficulties, and whether they have been detected before
+            object_boxes = true_class_boxes[true_class_images == this_image]  # (n_class_objects_in_img)
+            object_difficulties = true_class_difficulties[true_class_images == this_image]  # (n_class_objects_in_img)
+            
+            # If no such object in this image, then the detection is a false positive
+            if object_boxes.size(0) == 0:
+                #false_positives[d] = 1 #误检
+                result['IOU'] = 0
+                results.append(result)
+                continue
+
+            # Find maximum overlap of this detection with objects in this image of this class
+            overlaps = find_jaccard_overlap(this_detection_box, object_boxes)  # (1, n_class_objects_in_img)
+            max_overlap, ind = torch.max(overlaps.squeeze(0), dim=0)  # (), () - scalars
+
+            # 'ind' is the index of the object in these image-level tensors 'object_boxes', 'object_difficulties'
+            # In the original class-level tensors 'true_class_boxes', etc., 'ind' corresponds to object with index...            
+            original_ind = torch.LongTensor(range(true_class_boxes.size(0))).to(device)[true_class_images == this_image][ind]
+            # We need 'original_ind' to update 'true_class_boxes_detected'
+
+            # If the maximum overlap is greater than the threshold of 0.5, it's a match
+            if max_overlap.item() >=  0.0:
+                # If the object it matched with is 'difficult', ignore it
+                if object_difficulties[ind] == 0: #不考虑困难样本
+                    # If this object has already not been detected, it's a true positive
+                    if true_class_boxes_detected[original_ind] == 0:
+                        true_positives[d] = 1
+                        result['IOU'] = max_overlap
+                        true_class_boxes_detected[original_ind] = 1  # this object has now been detected/accounted for
+                    # Otherwise, it's a false positive (since this object is already accounted for)
+                    else:
+                        false_positives[d] = 1
+                        result['IOU'] = 0 #误检
+            # Otherwise, the detection occurs in a different location than the actual object, and is a false positive
+            else:
+                pass
+            results.append(result)
+        
+        count = 0
+        for i in range(true_class_boxes_detected.size(0)):
+            flag = true_class_boxes_detected[i]
+            # 漏检
+            if(flag == 0):
+                if true_class_difficulties[i] == 0:
+                    image_id = true_class_images[i]
+                    result['IOU'] = -1
+                    result['image_id'] = image_id
+                    result['score'] = 0
+                    count+=1
+                    results.append(result)    
+        
+        print("count: ", count)
+        tp = sum(true_positives == 1)
+        print("tp: ", tp)
+        fp = sum(false_positives == 1)
+        print("fp: ", fp)
+        print("n_easy_class_objects: ", n_easy_class_objects)
+                     
+    print("results len: ", len(results))
+    print("det_boxes: ", det_boxes.size(0))
+    #assert len(results) == det_boxes.size(0)
+    return results

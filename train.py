@@ -7,7 +7,7 @@ from datasets import PascalVOCDataset
 from utils import *
 
 # Data parameters
-data_folder = './'  # folder with data files
+data_folder = './data'  # folder with data files
 keep_difficult = True  # use objects considered difficult to detect?
 
 # Model parameters
@@ -72,6 +72,7 @@ def main():
                                                collate_fn=train_dataset.collate_fn, num_workers=workers,
                                                pin_memory=True)  # note that we're passing the collate function here
 
+    print("train_dataset: {}".format(len(train_dataset)))
     # Calculate total number of epochs to train and the epochs to decay learning rate at (i.e. convert iterations to epochs)
     # To convert iterations to epochs, divide iterations by the number of iterations per epoch
     # The paper trains for 120,000 iterations with a batch size of 32, decays after 80,000 and 100,000 iterations

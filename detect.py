@@ -5,7 +5,7 @@ from PIL import Image, ImageDraw, ImageFont
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # Load model checkpoint
-checkpoint = 'checkpoint_ssd300.pth.tar'
+checkpoint = './checkpoint/checkpoint_ssd300.pth.tar'
 checkpoint = torch.load(checkpoint)
 start_epoch = checkpoint['epoch'] + 1
 print('\nLoaded checkpoint from epoch %d.\n' % start_epoch)
@@ -64,7 +64,9 @@ def detect(original_image, min_score, max_overlap, top_k, suppress=None):
     # Annotate
     annotated_image = original_image
     draw = ImageDraw.Draw(annotated_image)
-    font = ImageFont.truetype("./calibril.ttf", 15)
+    #font = ImageFont.truetype("./calibril.ttf", 15)
+    font = ImageFont.load_default()
+    #font = ImageFont.load_default()
 
     # Suppress specific classes, if needed
     for i in range(det_boxes.size(0)):
@@ -83,7 +85,7 @@ def detect(original_image, min_score, max_overlap, top_k, suppress=None):
         #     det_labels[i]])  # a fourth rectangle at an offset of 1 pixel to increase line thickness
 
         # Text
-        text_size = font.getsize(det_labels[i].upper())
+        text_size = font.getbbox(det_labels[i].upper())
         text_location = [box_location[0] + 2., box_location[1] - text_size[1]]
         textbox_location = [box_location[0], box_location[1] - text_size[1], box_location[0] + text_size[0] + 4.,
                             box_location[1]]
@@ -96,7 +98,8 @@ def detect(original_image, min_score, max_overlap, top_k, suppress=None):
 
 
 if __name__ == '__main__':
-    img_path = '/media/ssd/ssd data/VOC2007/JPEGImages/000001.jpg'
+    img_path = './data/VOCdevkit/VOC2007/JPEGImages/000007.jpg'
     original_image = Image.open(img_path, mode='r')
     original_image = original_image.convert('RGB')
-    detect(original_image, min_score=0.2, max_overlap=0.5, top_k=200).show()
+    detected_image = detect(original_image, min_score=0.01, max_overlap=0.5, top_k=200) 
+    detected_image.save("output.jpg")
