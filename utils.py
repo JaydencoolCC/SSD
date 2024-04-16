@@ -580,7 +580,7 @@ def photometric_distort(image):
     return new_image
 
 
-def transform(image, boxes, labels, difficulties, split):
+def transform(image, boxes, labels, difficulties, action):
     """
     Apply the transformations above.
 
@@ -591,7 +591,7 @@ def transform(image, boxes, labels, difficulties, split):
     :param split: one of 'TRAIN' or 'TEST', since different sets of transformations are applied
     :return: transformed image, transformed bounding box coordinates, transformed labels, transformed difficulties
     """
-    assert split in {'TRAIN', 'TEST'}
+    assert action in {'train', 'test'}
 
     # Mean and standard deviation of ImageNet data that our base VGG from torchvision was trained on
     # see: https://pytorch.org/docs/stable/torchvision/models.html
@@ -603,7 +603,7 @@ def transform(image, boxes, labels, difficulties, split):
     new_labels = labels
     new_difficulties = difficulties
     # Skip the following operations for evaluation/testing
-    if split == 'TRAIN':
+    if action == 'train':
         # A series of photometric distortions in random order, each with 50% chance of occurrence, as in Caffe repo
         new_image = photometric_distort(new_image)
 
@@ -822,18 +822,21 @@ def calculate_gt(det_boxes, det_labels, det_scores, true_boxes, true_labels, tru
                     else:
                         false_positives[d] = 1
                         result['IOU'] = 0 #误检
+                    results.append(result)    
             # Otherwise, the detection occurs in a different location than the actual object, and is a false positive
             else:
                 pass
-            results.append(result)
-        
+            
+        #相对某一个类的而言
         count = 0
+        ii = []
         for i in range(true_class_boxes_detected.size(0)):
             flag = true_class_boxes_detected[i]
             # 漏检
             if(flag == 0):
                 if true_class_difficulties[i] == 0:
                     image_id = true_class_images[i]
+                    ii.append(image_id)
                     result['IOU'] = -1
                     result['image_id'] = image_id
                     result['score'] = 0
