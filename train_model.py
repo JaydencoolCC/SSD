@@ -3,7 +3,7 @@ import torch.backends.cudnn as cudnn
 import torch.optim
 import torch.utils.data
 import os
-os.environ["CUDA_VISIBLE_DEVICES"] = "1"
+os.environ["CUDA_VISIBLE_DEVICES"] = "3"
 
 from model import SSD300, MultiBoxLoss
 from datasets import PascalVOCDataset
@@ -44,7 +44,10 @@ grad_clip = None  # clip if gradients are exploding, which may happen at larger 
 cudnn.benchmark = True
 
 #checkpoint = "./checkpoint/checkpoint_ssd300.pth.tar" # path to model checkpoint, None if none
-checkpoint = None
+
+checkpoint_target_file = "./checkpoint/target_newssd300.pth.tar"
+checkpoint_shadow_file = "./checkpoint/shadow_newssd300.pth.tar"
+train_zero = True
 
 def main():
     """
@@ -53,31 +56,59 @@ def main():
     global start_epoch, label_map, epoch, checkpoint, decay_lr_at
 
     # Initialize model or load checkpoint
-    if checkpoint is None:
+    if train_zero:
         start_epoch = 0
-        model = SSD300(n_classes=n_classes)
+        model_target = SSD300(n_classes=n_classes)
         # Initialize the optimizer, with twice the default learning rate for biases, as in the original Caffe repo
         biases = list()
         not_biases = list()
-        for param_name, param in model.named_parameters():
+        for param_name, param in model_target.named_parameters():
             if param.requires_grad:
                 if param_name.endswith('.bias'):
                     biases.append(param)
                 else:
                     not_biases.append(param)
-        optimizer = torch.optim.SGD(params=[{'params': biases, 'lr': 2 * lr}, {'params': not_biases}],
+                    
+        optimizer_target = torch.optim.SGD(params=[{'params': biases, 'lr': 2 * lr}, {'params': not_biases}],
                                     lr=lr, momentum=momentum, weight_decay=weight_decay)
+        criterion_target = MultiBoxLoss(priors_cxcy=model_target.priors_cxcy).to(device)
 
+        model_shadow = SSD300(n_classes=n_classes)
+        # Initialize the optimizer, with twice the default learning rate for biases, as in the original Caffe repo
+        biases = list()
+        not_biases = list()
+        for param_name, param in model_shadow.named_parameters():
+            if param.requires_grad:
+                if param_name.endswith('.bias'):
+                    biases.append(param)
+                else:
+                    not_biases.append(param)
+                    
+        optimizer_shadow = torch.optim.SGD(params=[{'params': biases, 'lr': 2 * lr}, {'params': not_biases}],
+                                    lr=lr, momentum=momentum, weight_decay=weight_decay)
+        
+        criterion_shadow = MultiBoxLoss(priors_cxcy=model_shadow.priors_cxcy).to(device)
+        
     else:
-        checkpoint = torch.load(checkpoint)
-        start_epoch = checkpoint['epoch'] + 1
-        print('\nLoaded checkpoint from epoch %d.\n' % start_epoch)
-        model = checkpoint['model']
-        optimizer = checkpoint['optimizer']
+        checkpoint_target = torch.load(checkpoint_target_file)
+        start_epoch = checkpoint_target['epoch'] + 1
+        print('\nLoaded target checkpoint from epoch %d.\n' % start_epoch)
+        model_target = checkpoint_target['model']
+        optimizer_target = checkpoint_target['optimizer']
+        criterion_target = MultiBoxLoss(priors_cxcy=model_target.priors_cxcy).to(device)
+       
+        checkpoint_shadow = torch.load(checkpoint_shadow_file)
+        start_epoch = checkpoint_shadow['epoch'] + 1
+        print('\nLoaded shadow checkpoint from epoch %d.\n' % start_epoch)
+        model_shadow = checkpoint_shadow['model']
+        optimizer_shadow = checkpoint_shadow['optimizer']
+        criterion_shadow = MultiBoxLoss(priors_cxcy=model_shadow.priors_cxcy).to(device)
+       
 
     # Move to default device
-    model = model.to(device)
-    criterion = MultiBoxLoss(priors_cxcy=model.priors_cxcy).to(device)
+    model_target = model_target.to(device)
+    model_shadow = model_shadow.to(device)
+    
 
     # Custom dataloaders
     train_dataset = PascalVOCDataset(data_folder,
@@ -126,15 +157,14 @@ def main():
     decay_lr_at = [it // (len(train_dataset) // 32) for it in decay_lr_at]
 
     # Epochs
-    #epochs = 1
-    addition = 'target_'
-    train(trainDataLoader_target, model, criterion, optimizer, epochs, addition)
+    #epochs = 400
+    print("Training target model")
+    addition = 'target_400_'
+    train(trainDataLoader_target, model_target, criterion_target, optimizer_target, epochs, addition)
     
-    model_shadow = copy.deepcopy(model)
-    optimizer_shadow = copy.deepcopy(optimizer)
-    
-    addition = 'shadow_'
-    train(trainDataLoader_shadow, model_shadow, criterion, optimizer_shadow, epochs, addition)
+    print("Training shadow model")
+    addition = 'shadow_400_'
+    train(trainDataLoader_shadow, model_shadow, criterion_shadow, optimizer_shadow, epochs, addition)
     
     
     

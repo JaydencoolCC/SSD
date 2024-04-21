@@ -1,7 +1,6 @@
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, Dataset
-from torch.distributions import Categorical
 import numpy as np
 from torchmetrics.functional import roc, auroc, precision_recall_curve
 from torchmetrics.utilities.compute import auc
@@ -9,10 +8,10 @@ from .attack_utils import AttackResult
 from attack import PredictionScoreAttack
 from .attack_utils import cross_entropy
 from datasets_utils.dataset_tools import collate_fn
-from model import SSD300, MultiBoxLoss
 from utils_tools.roc import get_roc
+from utils_tools.loss import AttackLoss
 
-class MetricAttack(PredictionScoreAttack):
+class DetAttack(PredictionScoreAttack):
     def __init__(self, apply_softmax: bool, batch_size: int = 1, log_training: bool = True, metric_method = "Entropy"):
         super().__init__('Entropy Attack')
         self.metric = self.get_metric_method(metric_method)
@@ -25,7 +24,7 @@ class MetricAttack(PredictionScoreAttack):
         self, shadow_model: nn.Module, member_dataset: torch.utils.data.Dataset, non_member_dataset: Dataset
     ):
         # Gather entropy of predictions by shadow model
-        criterion = MultiBoxLoss(priors_cxcy=shadow_model.priors_cxcy).to(self.device)
+        criterion = AttackLoss().to(self.device)
         
         shadow_model.to(self.device)
         shadow_model.eval()
@@ -42,7 +41,10 @@ class MetricAttack(PredictionScoreAttack):
                     boxes = [b.to(self.device) for b in boxes]
                     labels = [l.to(self.device) for l in labels]
                     predicted_locs, predicted_scores = shadow_model(images)
-                    output = criterion(predicted_locs, predicted_scores, boxes, labels)  # scalar            
+                    det_boxes_batch, det_labels_batch, det_scores_batch = shadow_model.detect_objects(predicted_locs, predicted_scores,
+                                                                                       min_score=0.2, max_overlap=0.45,
+                                                                                       top_k=200)
+                    output = criterion(det_boxes_batch, det_scores_batch, det_labels_batch, boxes, labels)  # scalar  
                     if self.apply_softmax:
                         prediction_scores = torch.softmax(output, dim=1)
                     else:
@@ -79,7 +81,7 @@ class MetricAttack(PredictionScoreAttack):
     def predict_membership(self, target_model: nn.Module, dataset: Dataset):
         values = []
         scores = []
-        criterion = MultiBoxLoss(priors_cxcy=target_model.priors_cxcy).to(self.device)
+        criterion = AttackLoss().to(self.device)
         target_model.eval()
         with torch.no_grad():
             loader = DataLoader(dataset, batch_size=self.batch_size, num_workers=4, collate_fn=collate_fn, pin_memory=True)
@@ -88,7 +90,10 @@ class MetricAttack(PredictionScoreAttack):
                 boxes = [b.to(self.device) for b in boxes]
                 labels = [l.to(self.device) for l in labels]
                 predicted_locs, predicted_scores = target_model(images)
-                output = criterion(predicted_locs, predicted_scores, boxes, labels)  # scalar 
+                det_boxes_batch, det_labels_batch, det_scores_batch = target_model.detect_objects(predicted_locs, predicted_scores,
+                                                                                   min_score=0.2, max_overlap=0.45,
+                                                                                   top_k=200)
+                output = criterion(det_boxes_batch, det_scores_batch, det_labels_batch, boxes, labels)  # scalar  
                 if self.apply_softmax:
                     pred_scores = torch.softmax(output, dim=1)
                 else:
@@ -110,7 +115,7 @@ class MetricAttack(PredictionScoreAttack):
     
     def get_attack_model_prediction_scores(self, target_model: nn.Module, dataset: Dataset) -> torch.Tensor:
         values = []
-        criterion = MultiBoxLoss(priors_cxcy=target_model.priors_cxcy).to(self.device)
+        criterion = AttackLoss().to(self.device)
         target_model.eval()
         with torch.no_grad():
             loader = DataLoader(dataset, batch_size=self.batch_size, num_workers=4, collate_fn=collate_fn, pin_memory=True)
@@ -119,7 +124,10 @@ class MetricAttack(PredictionScoreAttack):
                 boxes = [b.to(self.device) for b in boxes]
                 labels = [l.to(self.device) for l in labels]
                 predicted_locs, predicted_scores = target_model(images)
-                output = criterion(predicted_locs, predicted_scores, boxes, labels)  # scalar 
+                det_boxes_batch, det_labels_batch, det_scores_batch = target_model.detect_objects(predicted_locs, predicted_scores,
+                                                                                   min_score=0.2, max_overlap=0.45,
+                                                                                   top_k=200)
+                output = criterion(det_boxes_batch, det_scores_batch, det_labels_batch, boxes, labels)  # scalar  
                 if self.apply_softmax:
                     pred_scores = torch.softmax(output, dim=1)
                 else:

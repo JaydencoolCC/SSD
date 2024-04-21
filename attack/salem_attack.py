@@ -6,7 +6,7 @@ from typing import Optional
 
 from attack import PredictionScoreAttack
 from datasets_utils.dataset_tools import collate_fn
-
+from utils import adjust_learning_rate
 class SalemAttack(PredictionScoreAttack):
     def __init__(
         self,
@@ -24,7 +24,7 @@ class SalemAttack(PredictionScoreAttack):
         if attack_model:
             self.attack_model = attack_model
         else:
-            self.attack_model = nn.Sequential(nn.Linear(self.k, 64), nn.ReLU(), nn.Linear(64, 1))
+            self.attack_model = nn.Sequential(nn.Linear(self.k, 256), nn.ReLU(), nn.Linear(256,64), nn.ReLU(), nn.Linear(64, 1))
         self.attack_model.to(self.device)
         self.apply_softmax = apply_softmax
         self.epochs = epochs
@@ -64,13 +64,19 @@ class SalemAttack(PredictionScoreAttack):
         # Train attack model
         self.attack_model.train()
         loss_fkt = torch.nn.BCEWithLogitsLoss()
-        optimizer = torch.optim.Adam(self.attack_model.parameters(), lr=self.lr)
+        optimizer = torch.optim.Adam(self.attack_model.parameters(), lr=0.0001, weight_decay=1e-4)
+        
         if self.log_training:
             print('Train attack model')
         
-        early_stopper = EarlyStopper(window=15, min_diff=0.0005)
+        early_stopper = EarlyStopper(window=15, min_diff=0.005)
         epoch = 0
+        parm = [50, 100]
+        #self.epochs = 20
         while epoch != self.epochs:
+            # if epoch in parm:
+            #     adjust_learning_rate(optimizer,scale=0.1)
+                
             num_corrects = 0
             total_samples = 0
             running_loss = 0.0

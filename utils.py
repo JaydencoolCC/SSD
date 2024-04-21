@@ -647,7 +647,7 @@ def adjust_learning_rate(optimizer, scale):
     """
     for param_group in optimizer.param_groups:
         param_group['lr'] = param_group['lr'] * scale
-    print("DECAYING learning rate.\n The new LR is %f\n" % (optimizer.param_groups[1]['lr'],))
+    print("DECAYING learning rate.\n The new LR is %f\n" % (optimizer.param_groups[0]['lr'],))
 
 
 def accuracy(scores, targets, k):
@@ -666,7 +666,7 @@ def accuracy(scores, targets, k):
     return correct_total.item() * (100.0 / batch_size)
 
 
-def save_checkpoint(epoch, model, optimizer):
+def save_checkpoint(epoch, model, optimizer, addition):
     """
     Save model checkpoint.
 
@@ -677,8 +677,9 @@ def save_checkpoint(epoch, model, optimizer):
     state = {'epoch': epoch,
              'model': model,
              'optimizer': optimizer}
-    filename = 'checkpoint_ssd300.pth.tar'
-    torch.save(state, filename)
+    filename = addition + 'ssd300.pth.tar'
+    file_path = "checkpoint/" + filename
+    torch.save(state, file_path)
 
 
 class AverageMeter(object):
