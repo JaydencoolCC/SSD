@@ -2,9 +2,27 @@ import time
 import torch.backends.cudnn as cudnn
 import torch.optim
 import torch.utils.data
+import os
+os.environ["CUDA_VISIBLE_DEVICES"] = "5"
 from model import SSD300, MultiBoxLoss
 from datasets import PascalVOCDataset
 from utils import *
+from datasets_utils.dataset_tools import get_train_val_split, get_subsampled_dataset, print_attack_results, get_member_non_member_split, collate_fn
+import argparse
+import copy
+
+
+# Parameters
+parser = argparse.ArgumentParser(description='PyTorch SSD Evaluation')
+parser.add_argument('--checkpoint', default='./checkpoint/checkpoint_ssd300.pth.tar', type=str, help='Checkpoint path')
+parser.add_argument('--seed', default=42, type=int, help='Data folder')
+parser.add_argument('--model_type', default='target', type=str)
+parser.add_argument('--label_smoothing', action='store_true', default=False, help='Use label smoothing')
+parser.add_argument('--factor', default=0.1, type=float)
+parser.add_argument('--dropout', default=None, type=float)
+
+
+args = parser.parse_args()
 
 # Data parameters
 data_folder = './data'  # folder with data files
@@ -19,7 +37,7 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 checkpoint = None  # path to model checkpoint, None if none
 batch_size = 32  # batch size
 iterations = 120000  # number of iterations to train
-workers = 4  # number of workers for loading data in the DataLoader
+workers = 8  # number of workers for loading data in the DataLoader
 print_freq = 200  # print training status every __ batches
 lr = 1e-3  # learning rate
 decay_lr_at = [80000, 100000]  # decay learning rate after these many iterations
@@ -30,7 +48,9 @@ grad_clip = None  # clip if gradients are exploding, which may happen at larger 
 
 cudnn.benchmark = True
 
-checkpoint = "./checkpoint/checkpoint_ssd300.pth.tar"
+
+checkpoint_file = args.checkpoint
+train_zero = True
 
 def main():
     """
@@ -39,9 +59,13 @@ def main():
     global start_epoch, label_map, epoch, checkpoint, decay_lr_at
 
     # Initialize model or load checkpoint
-    if checkpoint is None:
+    if train_zero:
         start_epoch = 0
-        model = SSD300(n_classes=n_classes)
+        if(args.dropout is not None):
+            model = SSD300(n_classes=n_classes, dropout=args.dropout)
+        else:
+            model = SSD300(n_classes=n_classes)
+            
         # Initialize the optimizer, with twice the default learning rate for biases, as in the original Caffe repo
         biases = list()
         not_biases = list()
@@ -51,39 +75,87 @@ def main():
                     biases.append(param)
                 else:
                     not_biases.append(param)
+                    
         optimizer = torch.optim.SGD(params=[{'params': biases, 'lr': 2 * lr}, {'params': not_biases}],
                                     lr=lr, momentum=momentum, weight_decay=weight_decay)
+        criterion = MultiBoxLoss(priors_cxcy=model.priors_cxcy, label_smoothing=args.label_smoothing, factor=args.factor).to(device)
 
     else:
-        checkpoint = torch.load(checkpoint)
+        checkpoint = torch.load(checkpoint_file)
         start_epoch = checkpoint['epoch'] + 1
-        print('\nLoaded checkpoint from epoch %d.\n' % start_epoch)
+        print('\nLoaded target checkpoint from epoch %d.\n' % start_epoch)
         model = checkpoint['model']
         optimizer = checkpoint['optimizer']
-
+        criterion = MultiBoxLoss(priors_cxcy=model.priors_cxcy, label_smoothing=args.label_smoothing, factor=args.factor).to(device)
     # Move to default device
     model = model.to(device)
-    criterion = MultiBoxLoss(priors_cxcy=model.priors_cxcy).to(device)
+    
 
     # Custom dataloaders
     train_dataset = PascalVOCDataset(data_folder,
                                      split='train',
                                      keep_difficult=keep_difficult)
-    train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=batch_size, shuffle=True,
-                                               collate_fn=train_dataset.collate_fn, num_workers=workers,
-                                               pin_memory=True)  # note that we're passing the collate function here
-
+    
+    test_dataset = PascalVOCDataset(data_folder,
+                                     split='test',
+                                     keep_difficult=keep_difficult)
+    
+    
     print("train_dataset: {}".format(len(train_dataset)))
+    print("test_dataset: {}".format(len(test_dataset)))
+
+    train_size = len(train_dataset) // 2
+    test_size = len(test_dataset) // 2
+    
+    train_dataset = get_subsampled_dataset(train_dataset, dataset_size=train_size*2, proportion=None)
+    train_target, train_shadow = get_train_val_split(train_dataset, train_size, seed=args.seed, stratify=False, targets=None)
+    
+    test_dataset = get_subsampled_dataset(test_dataset, dataset_size=test_size*2, proportion=0.5)
+    test_target, test_shadow= get_train_val_split(test_dataset, test_size, seed=args.seed, stratify=False, targets=None)
+    
+    
+    trainDataLoader_target = torch.utils.data.DataLoader(train_target, batch_size=batch_size, shuffle=True,
+                                               collate_fn=collate_fn, num_workers=workers,
+                                               pin_memory=True)  # note that we're passing the collate function here
+    
+    trainDataLoader_shadow = torch.utils.data.DataLoader(train_shadow, batch_size=batch_size, shuffle=True,
+                                               collate_fn=collate_fn, num_workers=workers,
+                                               pin_memory=True)  # note that we're passing the collate function here
+    
+    testDataLoade_target = torch.utils.data.DataLoader(test_target, batch_size=batch_size, shuffle=False,
+                                               collate_fn=collate_fn, num_workers=workers,
+                                               pin_memory=True)  # note that we're passing the collate function here
+    
+    testDataLoade_shadow = torch.utils.data.DataLoader(test_shadow, batch_size=batch_size, shuffle=False,
+                                               collate_fn=collate_fn, num_workers=workers,
+                                               pin_memory=True)  # note that we're passing the collate function here
+        
+    
     # Calculate total number of epochs to train and the epochs to decay learning rate at (i.e. convert iterations to epochs)
     # To convert iterations to epochs, divide iterations by the number of iterations per epoch
     # The paper trains for 120,000 iterations with a batch size of 32, decays after 80,000 and 100,000 iterations
     epochs = iterations // (len(train_dataset) // 32)
     decay_lr_at = [it // (len(train_dataset) // 32) for it in decay_lr_at]
 
-    print("decay_lr_at: {}".format(decay_lr_at))
-    print("start_epoch: {}".format(start_epoch))
     # Epochs
-    epochs = 400
+    #epochs = 1
+    print("Training %s model" % args.model_type)
+    
+    addition = args.model_type + "_" + "ls"
+    if(args.label_smoothing):
+        addition += "LS_" + str(args.factor) +"_"
+    if(args.dropout):
+        addition += "drop_" + str(args.dropout) +"_"    
+    if(args.model_type == "target"):
+        trainDataLoader = trainDataLoader_target
+    elif(args.model_type == "shadow"):
+        trainDataLoader = trainDataLoader_shadow
+    else:
+        raise ValueError
+        
+    train(trainDataLoader, model, criterion, optimizer, epochs, addition)
+    
+def train(train_loader, model, criterion, optimizer, epochs, addition):
     for epoch in range(start_epoch, epochs):
 
         # Decay learning rate at particular epochs
@@ -91,18 +163,17 @@ def main():
             adjust_learning_rate(optimizer, decay_lr_to)
 
         # One epoch's training
-        train(train_loader=train_loader,
+        train_epoch(train_loader= train_loader,
               model=model,
               criterion=criterion,
               optimizer=optimizer,
               epoch=epoch)
 
         # Save checkpoint
-        addition = 'epoch_400_'
         save_checkpoint(epoch, model, optimizer, addition)
 
 
-def train(train_loader, model, criterion, optimizer, epoch):
+def train_epoch(train_loader, model, criterion, optimizer, epoch):
     """
     One epoch's training.
 
@@ -151,7 +222,6 @@ def train(train_loader, model, criterion, optimizer, epoch):
 
         start = time.time()
 
-        # Print status
         if i % print_freq == 0:
             print('Epoch: [{0}][{1}/{2}]\t'
                   'Batch Time {batch_time.val:.3f} ({batch_time.avg:.3f})\t'

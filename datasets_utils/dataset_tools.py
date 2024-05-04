@@ -107,7 +107,7 @@ def print_attack_results(attack_name: str, attack_results: AttackResult):
     Takes the attack name and the attack result object and prints the results to the console.
     """
     print(
-        f'{attack_name}: \n ' + f'\tRecall: {attack_results.recall:.4f} \t Precision: {attack_results.precision:.4f} ' +
+        f'{attack_name}: \n ' +  f'\tRecall: {attack_results.recall:.4f} \t accuracy: {attack_results.attack_acc:.4f} \t Precision: {attack_results.precision:.4f} ' +
         f'\t AUROC: {attack_results.auroc:.4f} \t AUPR: {attack_results.aupr:.4f} \t FPR@95%TPR: {attack_results.fpr_at_tpr95:.4f}' +
         f'\t FPR: {attack_results.fpr:.4f} \t TP MMPS: {attack_results.tp_mmps:.4f} ' +
         f'\t FP MMPS: {attack_results.fp_mmps:.4f} \t FN MMPS: {attack_results.fn_mmps:.4f} ' +

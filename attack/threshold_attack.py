@@ -24,20 +24,18 @@ class ThresholdAttack(PredictionScoreAttack):
             apply_softmax=self.apply_softmax, 
             dataset=member_dataset, 
             batch_size=self.batch_size, 
-            num_workers=8
+            num_workers=4
         )
-        max_pred_scores_shadow_member = pred_scores_shadow_member.max(dim=1)[0]
-        pred_scores_shadow_member = max_pred_scores_shadow_member.tolist()
+        pred_scores_shadow_member = pred_scores_shadow_member.tolist()
 
         pred_scores_shadow_non_member = get_model_prediction_scores(
             model=shadow_model,
             apply_softmax=self.apply_softmax,
             dataset=non_member_dataset,
             batch_size=self.batch_size,
-            num_workers=8
+            num_workers=4
         )
-        max_pred_scores_shadow_non_member = pred_scores_shadow_non_member.max(dim=1)[0]
-        pred_scores_shadow_non_member = max_pred_scores_shadow_non_member.tolist()
+        pred_scores_shadow_non_member = pred_scores_shadow_non_member.tolist()
         
         pred_scores = pred_scores_shadow_non_member + pred_scores_shadow_member
         self.shadow_fpr, self.shadow_tpr, self.thresholds, self.auroc = get_roc(labels, pred_scores)
@@ -45,8 +43,8 @@ class ThresholdAttack(PredictionScoreAttack):
         self.attack_treshold = self.thresholds[threshold_idx]
         
         print("Threshold: ", self.attack_treshold)
-        nums_member = sum(max_pred_scores_shadow_member > self.attack_treshold)
-        nums_non_member = sum(max_pred_scores_shadow_non_member > self.attack_treshold)
+        nums_member = sum(pred_scores_shadow_member > self.attack_treshold)
+        nums_non_member = sum(pred_scores_shadow_non_member > self.attack_treshold)
         print("Number of members: ", nums_member)
         print("Number of non members: ", nums_non_member)
 
@@ -54,11 +52,11 @@ class ThresholdAttack(PredictionScoreAttack):
         # get the prediction scores of the shadow model on the members and the non-members in order to attack the target model
         pred_scores = get_model_prediction_scores(
             model=model, apply_softmax=self.apply_softmax, dataset=dataset, batch_size=self.batch_size, num_workers=8
-        ).max(dim=1)[0].tolist()
+        ).tolist()
 
         return pred_scores > self.attack_treshold
 
     def get_attack_model_prediction_scores(self, target_model: nn.Module, dataset: Dataset) -> torch.Tensor:
         return get_model_prediction_scores(
             model=target_model, apply_softmax=self.apply_softmax, dataset=dataset, batch_size=self.batch_size, num_workers=8
-        ).max(dim=1)[0]
+        )

@@ -3,7 +3,7 @@ import torch.nn as nn
 from torch.utils.data import DataLoader, Dataset
 from torch.distributions import Categorical
 import numpy as np
-
+from datasets_utils.dataset_tools import collate_fn
 from attack import PredictionScoreAttack
 
 
@@ -20,6 +20,8 @@ class EntropyAttack(PredictionScoreAttack):
         self, shadow_model: nn.Module, member_dataset: torch.utils.data.Dataset, non_member_dataset: Dataset
     ):
         # Gather entropy of predictions by shadow model
+        
+        
         shadow_model.to(self.device)
         shadow_model.eval()
         entropy_values = []
@@ -29,19 +31,21 @@ class EntropyAttack(PredictionScoreAttack):
         with torch.no_grad():
             shadow_model.eval()
             for i, dataset in enumerate([non_member_dataset, member_dataset]):
-                loader = DataLoader(dataset, batch_size=self.batch_size, num_workers=4)
-                for x, y in loader:
-                    x, y = x.to(self.device), y.to(self.device)
-                    x = x.transpose(2, 1)
-                    output,_ = shadow_model(x)
+                loader = DataLoader(dataset, batch_size=self.batch_size, num_workers=4, collate_fn=collate_fn, pin_memory=True, shuffle=False)
+                for  images, boxes, labels, difficulties in loader:
+                    images = images.to(self.device)
+                    boxes = [b.to(self.device) for b in boxes]
+                    labels = [l.to(self.device) for l in labels]
+                    predicted_locs, predicted_scores = shadow_model(images)
                     if self.apply_softmax:
-                        prediction_scores = torch.softmax(output, dim=1)
+                        prediction_scores = torch.softmax(predicted_scores, dim=1)
                     else:
-                        prediction_scores = output
-                    membership_labels.append(torch.full_like(y, i))
-                    entropy = Categorical(probs=prediction_scores).entropy()
-                    entropy_values.append(entropy)
-        entropy_values = torch.cat(entropy_values, dim=0).cpu().numpy()
+                        prediction_scores = predicted_scores
+                    entropy = Categorical(logits=prediction_scores).entropy()
+                    
+                    entropy_values.append(torch.mean(entropy))
+                    membership_labels.append(torch.full((len(labels),), i))
+        entropy_values = torch.stack(entropy_values, dim=0).cpu().numpy()
         membership_labels = torch.cat(membership_labels, dim=0).cpu().numpy()
 
         # Compute threshold
@@ -63,34 +67,38 @@ class EntropyAttack(PredictionScoreAttack):
         entropy_values = []
         target_model.eval()
         with torch.no_grad():
-            for x, y in DataLoader(dataset, batch_size=self.batch_size, num_workers=4):
-                x, y = x.to(self.device), y.to(self.device)
-                x = x.transpose(2, 1)
-                output, _ = target_model(x)
+            loader = DataLoader(dataset, batch_size=self.batch_size, num_workers=4, collate_fn=collate_fn, pin_memory=True)
+            for  images, boxes, labels, difficulties in loader:
+                images = images.to(self.device)
+                boxes = [b.to(self.device) for b in boxes]
+                labels = [l.to(self.device) for l in labels]
+                predicted_locs, predicted_scores = target_model(images)
                 if self.apply_softmax:
-                    pred_scores = torch.softmax(output, dim=1)
+                    pred_scores = torch.softmax(predicted_scores, dim=1)
                 else:
-                    pred_scores = output
-                entropy = Categorical(probs=pred_scores).entropy()
-                entropy_values.append(entropy)
-        entropy_values = torch.cat(entropy_values, dim=0)
+                    pred_scores = predicted_scores
+                entropy = Categorical(logits=predicted_scores).entropy()
+                entropy_values.append(torch.mean(entropy))
+        entropy_values = torch.stack(entropy_values, dim=0)
         return (entropy_values < self.theta).cpu().numpy()
 
     def get_attack_model_prediction_scores(self, target_model: nn.Module, dataset: Dataset) -> torch.Tensor:
         entropy_values = []
         target_model.eval()
         with torch.no_grad():
-            for x, y in DataLoader(dataset, batch_size=self.batch_size):
-                x, y = x.to(self.device), y.to(self.device)
-                x = x.transpose(2, 1)
-                output, _ = target_model(x)
+            loader = DataLoader(dataset, batch_size=self.batch_size, num_workers=4, collate_fn=collate_fn, pin_memory=True)
+            for  images, boxes, labels, difficulties in loader:
+                images = images.to(self.device)
+                boxes = [b.to(self.device) for b in boxes]
+                labels = [l.to(self.device) for l in labels]
+                predicted_locs, predicted_scores = target_model(images)
                 if self.apply_softmax:
-                    pred_scores = torch.softmax(output, dim=1)
+                    pred_scores = torch.softmax(predicted_scores, dim=1)
                 else:
-                    pred_scores = output
-                entropy = Categorical(probs=pred_scores).entropy()
-                entropy_values.append(entropy)
-        entropy_values = torch.cat(entropy_values, dim=0)
+                    pred_scores = predicted_scores
+                entropy = Categorical(logits=predicted_scores).entropy()
+                entropy_values.append(torch.mean(entropy))
+        entropy_values = torch.stack(entropy_values, dim=0)
 
         # we have to flip the sign of the values since low entropy means that the sample was a member
         return -entropy_values.cpu()

@@ -24,7 +24,7 @@ class SalemAttack(PredictionScoreAttack):
         if attack_model:
             self.attack_model = attack_model
         else:
-            self.attack_model = nn.Sequential(nn.Linear(self.k, 256), nn.ReLU(), nn.Linear(256,64), nn.ReLU(), nn.Linear(64, 1))
+            self.attack_model = nn.Sequential(nn.Linear(self.k, 128), nn.ReLU(), nn.Linear(128,64), nn.ReLU(), nn.Linear(64, 1))
         self.attack_model.to(self.device)
         self.apply_softmax = apply_softmax
         self.epochs = epochs
@@ -45,8 +45,9 @@ class SalemAttack(PredictionScoreAttack):
                 loader = DataLoader(dataset, batch_size=self.batch_size, num_workers=4, collate_fn=collate_fn, shuffle=False, pin_memory=True)
                 for images, boxes, labels, difficulties in loader:
                     images = images.to(self.device)
-                    predicted_locs, predicted_scores = shadow_model(images)
-                    output = shadow_model.get_feature() #[bn, 256 ,1, 1]
+                    predicted_locs, predicted_scores = shadow_model(images) #(N, 8732, 4), (N, 8732, n_classes)
+                    output = torch.cat([predicted_locs,predicted_scores], dim=-1) #(N, 8732, n_classes+4)
+                    output = output.view(output.size(0), -1) #(N, 8732*(n_classes+4))
                     if self.apply_softmax:
                         prediction_scores = torch.softmax(output, dim=1)
                         features.append(prediction_scores)
@@ -56,20 +57,19 @@ class SalemAttack(PredictionScoreAttack):
                     
 
         # Compute top-k predictions
-        features = torch.cat(features, dim=0) #[n, 256 ,1, 1]
         membership_labels = torch.cat(membership_labels, dim=0) #[n]
-        features = features.squeeze(-1).squeeze(-1)  # [n, 256]
+        features = torch.cat(features, dim=0)
         attack_dataset = torch.utils.data.dataset.TensorDataset(features, membership_labels)
 
         # Train attack model
         self.attack_model.train()
         loss_fkt = torch.nn.BCEWithLogitsLoss()
-        optimizer = torch.optim.Adam(self.attack_model.parameters(), lr=0.0001, weight_decay=1e-4)
+        optimizer = torch.optim.Adam(self.attack_model.parameters(), lr=0.001, weight_decay=1e-4)
         
         if self.log_training:
             print('Train attack model')
         
-        early_stopper = EarlyStopper(window=15, min_diff=0.005)
+        early_stopper = EarlyStopper(window=15, min_diff=0.05)
         epoch = 0
         parm = [50, 100]
         #self.epochs = 20
@@ -110,14 +110,15 @@ class SalemAttack(PredictionScoreAttack):
         with torch.no_grad():
             for images, boxes, labels, difficulties in DataLoader(dataset, batch_size=self.batch_size, num_workers=4, collate_fn=collate_fn):
                 images = images.to(self.device)
-                predicted_locs, predicted_scores = target_model(images)
-                target_output = target_model.get_feature() #[bn,256,1,1]
+                predicted_locs, predicted_scores = target_model(images) #(N, 8732, 4), (N, 8732, n_classes)
+                target_output = torch.cat([predicted_locs,predicted_scores], dim=-1) #(N, 8732, n_classes+4)
+                target_output = target_output.view(target_output.size(0), -1) #(N, 8732*(n_classes+4))
                 if self.apply_softmax:
                     pred_scores = torch.softmax(target_output, dim=1)
                     top_pred_scores = torch.topk(pred_scores, k=self.k, dim=1, largest=True, sorted=True).values
                     attack_output = self.attack_model(top_pred_scores)
                 else:
-                    features = target_output.squeeze(-1).squeeze(-1)
+                    features = target_output
                     attack_output = self.attack_model(features)
                 predictions.append(attack_output.sigmoid() >= 0.5)
         predictions = torch.cat(predictions, dim=0).squeeze()
@@ -130,14 +131,15 @@ class SalemAttack(PredictionScoreAttack):
         with torch.no_grad():
            for images, boxes, labels, difficulties in DataLoader(dataset, batch_size=self.batch_size, num_workers=4, collate_fn=collate_fn):
                 images = images.to(self.device)
-                tpredicted_locs, predicted_scores = target_model(images)
-                target_output = target_model.get_feature() #[bn,256,1,1]
+                predicted_locs, predicted_scores = target_model(images)
+                target_output = torch.cat([predicted_locs,predicted_scores], dim=-1) #(N, 8732, n_classes+4)
+                target_output = target_output.view(target_output.size(0), -1) #(N, 8732*(n_classes+4))
                 if self.apply_softmax:
                     pred_scores = torch.softmax(target_output, dim=1)
                     top_pred_scores = torch.topk(pred_scores, k=self.k, dim=1, largest=True, sorted=True).values
                     attack_output = self.attack_model(top_pred_scores)
                 else:
-                    features = target_output.squeeze(-1).squeeze(-1)
+                    features = target_output
                     attack_output = self.attack_model(features)
                 predictions.append(attack_output.sigmoid())
         return torch.cat(predictions, dim=0).squeeze().cpu()
