@@ -10,6 +10,7 @@ from utils import *
 from datasets_utils.dataset_tools import get_train_val_split, get_subsampled_dataset, print_attack_results, get_member_non_member_split, collate_fn
 import argparse
 import copy
+from opacus import PrivacyEngine
 
 
 # Parameters
@@ -20,7 +21,10 @@ parser.add_argument('--model_type', default='target', type=str)
 parser.add_argument('--label_smoothing', action='store_true', default=False, help='Use label smoothing')
 parser.add_argument('--factor', default=0.1, type=float)
 parser.add_argument('--dropout', default=None, type=float)
-
+parser.add_argument("--disable_dp",action="store_true", default=False, help="Disable privacy training and just train with vanilla SGD")
+parser.add_argument("--sigma", type=float, default=1.2, metavar="S", help="Noise multiplier")
+parser.add_argument("--max_per_sample_grad_norm", type=float, default=1.0, metavar="C", help="Clip per-sample gradients to this norm")
+parser.add_argument("--delta", type=float, default=1e-5, metavar="D", help="Target delta") 
 
 args = parser.parse_args()
 
@@ -100,9 +104,6 @@ def main():
                                      split='test',
                                      keep_difficult=keep_difficult)
     
-    
-    print("train_dataset: {}".format(len(train_dataset)))
-    print("test_dataset: {}".format(len(test_dataset)))
 
     train_size = len(train_dataset) // 2
     test_size = len(test_dataset) // 2
@@ -129,7 +130,10 @@ def main():
     testDataLoade_shadow = torch.utils.data.DataLoader(test_shadow, batch_size=batch_size, shuffle=False,
                                                collate_fn=collate_fn, num_workers=workers,
                                                pin_memory=True)  # note that we're passing the collate function here
-        
+    
+    
+    print("train target dataset: {}".format(len(train_target)))
+    print("test target dataset: {}".format(len(test_target)))
     
     # Calculate total number of epochs to train and the epochs to decay learning rate at (i.e. convert iterations to epochs)
     # To convert iterations to epochs, divide iterations by the number of iterations per epoch
@@ -141,21 +145,36 @@ def main():
     #epochs = 1
     print("Training %s model" % args.model_type)
     
-    addition = args.model_type + "_" + "ls"
+    addition = args.model_type + "_" + "new"
     if(args.label_smoothing):
         addition += "LS_" + str(args.factor) +"_"
     if(args.dropout):
-        addition += "drop_" + str(args.dropout) +"_"    
+        addition += "drop_" + str(args.dropout) +"_"  
+    if(args.disable_dp):
+        addition += "dp_" + str(args.delta)  
     if(args.model_type == "target"):
         trainDataLoader = trainDataLoader_target
     elif(args.model_type == "shadow"):
         trainDataLoader = trainDataLoader_shadow
     else:
         raise ValueError
-        
-    train(trainDataLoader, model, criterion, optimizer, epochs, addition)
     
-def train(train_loader, model, criterion, optimizer, epochs, addition):
+    if args.disable_dp:
+        print("Use DP to protect privacy")
+        privacy_engine = PrivacyEngine()
+        model, optimizer, trainDataLoader = privacy_engine.make_private(
+            module=model,
+            optimizer=optimizer,
+            data_loader=trainDataLoader,
+            noise_multiplier=args.sigma,
+            max_grad_norm=args.max_per_sample_grad_norm,
+        )
+    else:
+        privacy_engine = None
+            
+    train(trainDataLoader, model, criterion, optimizer, epochs, addition, privacy_engine)
+    
+def train(train_loader, model, criterion, optimizer, epochs, addition, privacy_engine):
     for epoch in range(start_epoch, epochs):
 
         # Decay learning rate at particular epochs
@@ -167,13 +186,14 @@ def train(train_loader, model, criterion, optimizer, epochs, addition):
               model=model,
               criterion=criterion,
               optimizer=optimizer,
-              epoch=epoch)
+              epoch=epoch,
+              privacy_engine=privacy_engine)
 
         # Save checkpoint
         save_checkpoint(epoch, model, optimizer, addition)
 
 
-def train_epoch(train_loader, model, criterion, optimizer, epoch):
+def train_epoch(train_loader, model, criterion, optimizer, epoch, privacy_engine):
     """
     One epoch's training.
 
@@ -200,14 +220,16 @@ def train_epoch(train_loader, model, criterion, optimizer, epoch):
         boxes = [b.to(device) for b in boxes]
         labels = [l.to(device) for l in labels]
 
+        #zero_grad
+        optimizer.zero_grad()
+        
         # Forward prop.
         predicted_locs, predicted_scores = model(images)  # (N, 8732, 4), (N, 8732, n_classes)
 
         # Loss
         loss = criterion(predicted_locs, predicted_scores, boxes, labels)  # scalar
-
+        print(loss)
         # Backward prop.
-        optimizer.zero_grad()
         loss.backward()
 
         # Clip gradients, if necessary
@@ -222,14 +244,21 @@ def train_epoch(train_loader, model, criterion, optimizer, epoch):
 
         start = time.time()
 
+        if privacy_engine is not None:
+            epsilon = privacy_engine.get_epsilon(args.delta)
+            print(
+                    f"(ε = {epsilon:.2f}, δ = {args.delta})"
+                )
+            
         if i % print_freq == 0:
             print('Epoch: [{0}][{1}/{2}]\t'
                   'Batch Time {batch_time.val:.3f} ({batch_time.avg:.3f})\t'
                   'Data Time {data_time.val:.3f} ({data_time.avg:.3f})\t'
                   'Loss {loss.val:.4f} ({loss.avg:.4f})\t'
-                  'lr {lr}\t'.format(epoch, i, len(train_loader),
+                  'lr {lr}'.format(epoch, i, len(train_loader),
                                                                   batch_time=batch_time,
                                                                   data_time=data_time, loss=losses, lr=optimizer.param_groups[1]['lr']))
+                
     del predicted_locs, predicted_scores, images, boxes, labels  # free some memory since their histories may be stored
 
 
