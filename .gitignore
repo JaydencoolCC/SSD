@@ -116,6 +116,9 @@ dmypy.json
 # untrack data and log
 data/
 log/
-
 checkpoint/
+checkpoints/
 results/
+.txt
+.pkl
+
