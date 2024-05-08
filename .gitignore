@@ -119,8 +119,8 @@ log/
 checkpoint/
 checkpoints/
 results/
-.txt
-.pkl
-.out
+*.txt
+*.pkl
+*.out
 
 
