@@ -1,9 +1,9 @@
 import matplotlib
 from tqdm import tqdm
 import os
-os.environ["CUDA_VISIBLE_DEVICES"] = "4"
+os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 from models.faster_rcnn import opt
-from datasets_utils.dataset_rcnn import Dataset, TestDataset
+from datasets_utils.dataset_rcnn import Dataset, TestDataset, collate_fn
 from models.faster_rcnn_vgg16 import FasterRCNNVGG16
 from example.trainer import FasterRCNNTrainer
 from models.utils import array_tool as at
@@ -20,7 +20,7 @@ parser.add_argument('--test_size', default=2476, type=int)
 
 args = parser.parse_args()
 
-
+torch.set_num_threads(2)
 def eval(dataloader, faster_rcnn, test_num=10000):
     pred_bboxes, pred_labels, pred_scores = list(), list(), list()
     gt_bboxes, gt_labels, gt_difficults = list(), list(), list()
@@ -46,12 +46,11 @@ def train(**kwargs):
     opt._parse(kwargs)
     # # Custom dataloaders
     train_dataset = Dataset(opt, data_name='VOC2007+2012')
-    
+    train_dataset_size = len(train_dataset)
     test_dataset = TestDataset(opt, split='test', data_name='VOC2007')
 
     train_size = len(train_dataset) // 2
     test_size = len(test_dataset) // 2
-    
     train_dataset = get_subsampled_dataset(train_dataset, dataset_size=train_size*2, proportion=None)
     train_target, train_shadow = get_train_val_split(train_dataset, train_size, seed=opt.seed, stratify=False, targets=None)
     
@@ -62,17 +61,20 @@ def train(**kwargs):
     trainDataLoader_target = torch.utils.data.DataLoader(train_target, 
                                   batch_size=1, 
                                   shuffle=True, 
+                                  pin_memory=True,
                                   num_workers=opt.num_workers)
     
     trainDataLoader_shadow = torch.utils.data.DataLoader(train_shadow, 
                                   batch_size=1, 
-                                  shuffle=True, 
+                                  shuffle=True,
+                                  pin_memory=True, 
                                   num_workers=opt.num_workers)
     
     testDataLoade_target = torch.utils.data.DataLoader(test_target,
                                        batch_size=1,
                                        num_workers=opt.num_workers,
                                        shuffle=False,
+                                       pin_memory=True,
                                        )
     
     
@@ -80,6 +82,7 @@ def train(**kwargs):
                                        batch_size=1,
                                        num_workers=opt.num_workers,
                                        shuffle=False,
+                                       pin_memory=True,
                                        )
 
     print("train target dataset: {}".format(len(train_target)))
@@ -88,8 +91,8 @@ def train(**kwargs):
     if(args.dataset_name == 'VOC2007+2012'):
         decay_lr_at = [12000, 16000]
         max_iter = 18000    
-        decay_lr_epoch = [it // (len(train_dataset) // 16) for it in decay_lr_at] # iter to epoch
-        epochs = max_iter // (len(train_dataset) // 16)
+        decay_lr_epoch = [it // (train_dataset_size // 16) for it in decay_lr_at] # iter to epoch
+        epochs = max_iter // (train_dataset_size // 16)
     elif(args.dataset_name == 'VOC2007'):
         #TODO
         pass
