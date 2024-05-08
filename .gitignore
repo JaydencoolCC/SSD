@@ -121,4 +121,6 @@ checkpoints/
 results/
 .txt
 .pkl
+.out
+
 
