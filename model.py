@@ -325,7 +325,7 @@ class SSD300(nn.Module):
     The SSD300 network - encapsulates the base VGG network, auxiliary, and prediction convolutions.
     """
 
-    def __init__(self, n_classes):
+    def __init__(self, n_classes, dropout=None):
         super(SSD300, self).__init__()
 
         self.n_classes = n_classes
@@ -342,6 +342,14 @@ class SSD300(nn.Module):
         # Prior boxes
         self.priors_cxcy = self.create_prior_boxes()
 
+        # attack_featrue
+        self.attack_feature = None
+        
+        # dropout
+        self.dropout = None
+        if(dropout is not None):
+            self.dropout = nn.Dropout(dropout)
+            
     def forward(self, image):
         """
         Forward propagation.
@@ -366,7 +374,26 @@ class SSD300(nn.Module):
         locs, classes_scores = self.pred_convs(conv4_3_feats, conv7_feats, conv8_2_feats, conv9_2_feats, conv10_2_feats,
                                                conv11_2_feats)  # (N, 8732, 4), (N, 8732, n_classes)
 
+        # get feature for attack
+        #self.attack_feature = conv11_2_feats #from deepest layer (N, 256, 1, 1)
+        self.attack_feature = conv10_2_feats #(N, 1024, 19, 19)
+        self.attack_feature = conv10_2_feats.view(conv10_2_feats.shape[0], -1, 1, 1)
+        
+        # dropout
+        # if self.dropout is not None:
+        #     # classes_scores = classes_scores.unsqueeze(-1)
+        #     classes_scores = self.dropout(classes_scores)
+        #     # classes_scores = classes_scores.squeeze(-1)
+            
+        #     # locs = locs.unsqueeze(-1)
+        #     #locs = self.dropout(locs)
+        #     # locs = locs.squeeze(-1)
+            
+            
         return locs, classes_scores
+    
+    def get_feature(self):
+        return self.attack_feature
 
     def create_prior_boxes(self):
         """
@@ -538,7 +565,7 @@ class MultiBoxLoss(nn.Module):
     (2) a confidence loss for the predicted class scores.
     """
 
-    def __init__(self, priors_cxcy, threshold=0.5, neg_pos_ratio=3, alpha=1.):
+    def __init__(self, priors_cxcy, threshold=0.5, neg_pos_ratio=3, alpha=1., label_smoothing=False, factor=0.08):
         super(MultiBoxLoss, self).__init__()
         self.priors_cxcy = priors_cxcy
         self.priors_xy = cxcy_to_xy(priors_cxcy)
@@ -547,7 +574,11 @@ class MultiBoxLoss(nn.Module):
         self.alpha = alpha
 
         self.smooth_l1 = nn.L1Loss()  # *smooth* L1 loss in the paper; see Remarks section in the tutorial
-        self.cross_entropy = nn.CrossEntropyLoss(reduce=False)
+        
+        if(label_smoothing):
+            self.cross_entropy = nn.CrossEntropyLoss(reduce=False, label_smoothing=factor)
+        else:
+            self.cross_entropy = nn.CrossEntropyLoss(reduce=False)
 
     def forward(self, predicted_locs, predicted_scores, boxes, labels):
         """
@@ -576,7 +607,7 @@ class MultiBoxLoss(nn.Module):
                                            self.priors_xy)  # (n_objects, 8732)
 
             # For each prior, find the object that has the maximum overlap
-            overlap_for_each_prior, object_for_each_prior = overlap.max(dim=0)  # (8732)
+            overlap_for_each_prior, object_for_each_prior = overlap.max(dim=0)  # (8732) #存储目标的id
 
             # We don't want a situation where an object is not represented in our positive (non-background) priors -
             # 1. An object might not be the best object for all priors, and is therefore not in object_for_each_prior.
@@ -584,24 +615,29 @@ class MultiBoxLoss(nn.Module):
 
             # To remedy this -
             # First, find the prior that has the maximum overlap for each object.
-            _, prior_for_each_object = overlap.max(dim=1)  # (N_o)
+            _, prior_for_each_object = overlap.max(dim=1)  # (N_o) #存储先验框的id
 
             # Then, assign each object to the corresponding maximum-overlap-prior. (This fixes 1.)
+            # object_for_each_prior: (8732), 值是目标的id, 给每个先验分配的最大overlap的目标的id
+            # prior_for_each_object: (N_o), 值是先验框的id, 给每个目标分配的最大overlap的先验框的id
+            # object_for_each_prior[prior_for_each_object]: 找到每个目标框对应的先验框的id，然后将该位置的值设置为目标的id
+            # 保证每个目标都分配一个最大overlap的先验框，每个先验框只是对应一个目标，每个目标可以对应多个先验
             object_for_each_prior[prior_for_each_object] = torch.LongTensor(range(n_objects)).to(device)
 
             # To ensure these priors qualify, artificially give them an overlap of greater than 0.5. (This fixes 2.)
-            overlap_for_each_prior[prior_for_each_object] = 1.
+            overlap_for_each_prior[prior_for_each_object] = 1. # (8732) #将每个目标匹配的最大的先验框的overlap设置为1
 
             # Labels for each prior
-            label_for_each_prior = labels[i][object_for_each_prior]  # (8732)
+            label_for_each_prior = labels[i][object_for_each_prior]  # (8732) #给每个先验框分配一个label
+            
             # Set priors whose overlaps with objects are less than the threshold to be background (no object)
-            label_for_each_prior[overlap_for_each_prior < self.threshold] = 0  # (8732)
+            label_for_each_prior[overlap_for_each_prior < self.threshold] = 0  # (8732) #将小于0.5的值，置于0，背景
 
             # Store
-            true_classes[i] = label_for_each_prior
+            true_classes[i] = label_for_each_prior #分配的label
 
             # Encode center-size object coordinates into the form we regressed predicted boxes to
-            true_locs[i] = cxcy_to_gcxgcy(xy_to_cxcy(boxes[i][object_for_each_prior]), self.priors_cxcy)  # (8732, 4)
+            true_locs[i] = cxcy_to_gcxgcy(xy_to_cxcy(boxes[i][object_for_each_prior]), self.priors_cxcy)  # (8732, 4) #先验框匹配的目标的坐标
 
         # Identify priors that are positive (object/non-background)
         positive_priors = true_classes != 0  # (N, 8732)
@@ -623,7 +659,7 @@ class MultiBoxLoss(nn.Module):
 
         # Number of positive and hard-negative priors per image
         n_positives = positive_priors.sum(dim=1)  # (N)
-        n_hard_negatives = self.neg_pos_ratio * n_positives  # (N)
+        n_hard_negatives = self.neg_pos_ratio * n_positives  # (N) #neg_pos_ratio:3, 负样本的数量
 
         # First, find the loss for all priors
         conf_loss_all = self.cross_entropy(predicted_scores.view(-1, n_classes), true_classes.view(-1))  # (N * 8732)
