@@ -12,7 +12,7 @@ keep_difficult = True  # difficult ground truth objects must always be considere
 batch_size = 64
 workers = 4
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-checkpoint = './checkpoint/checkpoint_ssd300.pth.tar'
+checkpoint = './checkpoint/shadow_new_ssd300.pth.tar'
 
 # Load model checkpoint that is to be evaluated
 checkpoint = torch.load(checkpoint)
@@ -26,7 +26,9 @@ model.eval()
 
 test_dataset = PascalVOCDataset(data_folder,
                                 split='test',
-                                keep_difficult=keep_difficult)
+                                keep_difficult=keep_difficult,
+                                action='test')
+
 test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=batch_size, shuffle=False,
                                           collate_fn=test_dataset.collate_fn, num_workers=workers, pin_memory=True)
 
@@ -60,7 +62,7 @@ def evaluate(test_loader, model):
 
             # Detect objects in SSD output
             det_boxes_batch, det_labels_batch, det_scores_batch = model.detect_objects(predicted_locs, predicted_scores,
-                                                                                       min_score=0.01, max_overlap=0.45,
+                                                                                       min_score=0.3, max_overlap=0.45,
                                                                                        top_k=200)
             # Evaluation MUST be at min_score=0.01, max_overlap=0.45, top_k=200 for fair comparision with the paper's results and other repos
 
@@ -78,10 +80,8 @@ def evaluate(test_loader, model):
 
         # Calculate mAP
         APs, mAP = calculate_mAP(det_boxes, det_labels, det_scores, true_boxes, true_labels, true_difficulties)
-        results = calculate_gt(det_boxes, det_labels, det_scores, true_boxes, true_labels, true_difficulties)
-
+        
     # Print AP for each class
-    APs = []
     pp.pprint(APs)
 
     print('\nMean Average Precision (mAP): %.3f' % mAP)

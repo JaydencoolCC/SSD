@@ -3,10 +3,10 @@ from pprint import PrettyPrinter
 import pickle
 import argparse
 import os
-os.environ["CUDA_VISIBLE_DEVICES"] = "1"
+os.environ["CUDA_VISIBLE_DEVICES"] = "4"
 from datasets import PascalVOCDataset
 from utils import *
-
+from utils_tools.utils import get_temp_calibrated_models
 from attack import ThresholdAttack, SalemAttack, EntropyAttack, MetricAttack, DetAttack
 from datasets_utils.dataset_tools import get_train_val_split, get_subsampled_dataset, print_attack_results, get_member_non_member_split, collate_fn
 
@@ -21,9 +21,13 @@ parser.add_argument('--batch_size', default=64, type=int, help='Batch size for e
 parser.add_argument('--workers', default=4, type=int, help='Number of workers used in dataloading')
 parser.add_argument('--keep_difficult', default=True, type=bool, help='Keep difficult ground truth objects in evaluation')
 parser.add_argument('--device', default='cuda', type=str, help='Device used for inference')
-parser.add_argument('--split', default='test', type=str, help='Data split to evaluate on')
+parser.add_argument('--split', default='member', type=str, help='Data split to evaluate on')
 parser.add_argument('--action', default='test', type=str, help='train or test')
 parser.add_argument('--seed', default=42, type=int, help='seed')
+parser.add_argument('--cuda', default=1, type=int, help='chose cuda')
+parser.add_argument('--use_temp', action='store_true', help='use temperature scaling')
+parser.add_argument('--temp_value', default=5, type=float, help='temperature value')
+
 args = parser.parse_args()
 
 # Good formatting when printing the APs for each class and mAP
@@ -102,7 +106,7 @@ testDataLoade_shadow = torch.utils.data.DataLoader(test_shadow, batch_size=batch
 member_target, non_member_target = get_member_non_member_split(train_target, test_target, 2000)
 member_shadow, non_member_shadow = get_member_non_member_split(train_shadow, test_shadow, 2000)
 
-def evaluate(test_loader, model):
+def evaluate(test_loader, model, model_target, model_shadow):
     """
     Evaluate.
 
@@ -112,7 +116,7 @@ def evaluate(test_loader, model):
 
     # Make sure it's in eval mode
     model.eval()
-    criterion = AttackLoss().to(device)
+    criterion = MultiBoxLoss(priors_cxcy=model.priors_cxcy).to(device)
     
     # Lists to store detected and true boxes, labels, scores
     det_boxes = list()
@@ -122,6 +126,7 @@ def evaluate(test_loader, model):
     true_labels = list()
     true_difficulties = list()  # it is necessary to know which objects are 'difficult', see 'calculate_mAP' in utils.py
     loss_sample = []
+    iou_sample = []
     with torch.no_grad():
         # Batches
         for i, (images, boxes, labels, difficulties) in enumerate(tqdm(test_loader, desc='Evaluating')):
@@ -132,7 +137,7 @@ def evaluate(test_loader, model):
 
             # Detect objects in SSD output
             det_boxes_batch, det_labels_batch, det_scores_batch = model.detect_objects(predicted_locs, predicted_scores,
-                                                                                       min_score=0.2, max_overlap=0.45,
+                                                                                       min_score=0.01, max_overlap=0.45,
                                                                                        top_k=200)
             # Evaluation MUST be at min_score=0.01, max_overlap=0.45, top_k=200 for fair comparision with the paper's results and other repos
 
@@ -150,11 +155,18 @@ def evaluate(test_loader, model):
             
             # det_boxes, det_labels, det_scores = model.detect_objects(predicted_locs, predicted_scores, min_score=0.2,
             #                                                  max_overlap=0.5, top_k=200)
-            loss = criterion(det_boxes, det_scores, det_labels, boxes, labels)  # scalar  
+            #loss = criterion(det_boxes, det_scores, det_labels, boxes, labels)  # scalar  
             #loss = criterion(det_boxes_batch, det_scores_batch, det_labels_batch, boxes, labels)  # scalar            
+            loss = criterion(predicted_locs, predicted_scores, boxes, labels)  # scalar            
                       
             #print("loss: ", loss)
             loss_sample.append(loss.cpu().item())
+            
+            #APs, mAP,iou= calculate_attack(det_boxes_batch, det_labels_batch, det_scores_batch, boxes, labels, difficulties)
+            # iou_sample.append(iou)
+            # print("iou: ", iou) 
+            
+            #print('\nMean Average Precision (mAP): %.3f' % mAP)
             
         mAP = 0
         APs = 0
@@ -164,25 +176,37 @@ def evaluate(test_loader, model):
         #write_to_file(results)
         #write results to f   
     # Print AP for each class
-    loss_to_file(loss_sample)
+    loss_to_file(iou_sample)
     pp.pprint(APs)
     print('\nMean Average Precision (mAP): %.3f' % mAP)
     
+#def attack():
+    if args.use_temp:
+        model_target, model_shadow = get_temp_calibrated_models(
+            target_model=model_target,
+            shadow_model=model_shadow,
+            non_member_target=non_member_target,
+            non_member_shadow=non_member_shadow,
+            temp_value=args.temp_value
+        )
+
     attacks = [
-            #SalemAttack(apply_softmax= False, k=2304, log_training=True),
-            #MetricAttack(apply_softmax=False, batch_size=1),
-            DetAttack(apply_softmax=False, batch_size=1)
+            #SalemAttack(apply_softmax=False, batch_size=64, k=218300, log_training=True),
+            #ThresholdAttack(apply_softmax= False, batch_size=64),
+            MetricAttack(apply_softmax=False, batch_size=1),
+            #DetAttack(apply_softmax=False, batch_size=1)
+            EntropyAttack(apply_softmax=False, batch_size=1)
             ]
 
     name = [
             #"SalemAttack", 
             "MetricAttack"
-            "DetAttack"
+            #"DetAttack"
             ]
     attack_list = []
     for i in range(len(attacks)):
         attack = attacks[i]
-        attack.learn_attack_parameters(model_target, member_target, non_member_target)
+        attack.learn_attack_parameters(model_shadow, member_shadow, non_member_shadow)
         result = attack.evaluate(model_target, member_target, non_member_target)
         attack_list.append(result)
         print_attack_results(name[i], result)    
@@ -224,9 +248,10 @@ if __name__ == '__main__':
     print(args.split)
     
     if args.split == "member":
-        evaluate(member_target_loader, model_target)
+        evaluate(member_target_loader, model_target, model_target, model_shadow)
     elif args.split == "non_member":
-        evaluate(non_member_target_loader, model_target)
+        evaluate(non_member_target_loader, model_target, model_target, model_shadow)
     else:
-        raise ValueError("Invalid data_type: " + args.data_type)
+        raise ValueError("Invalid data_type: " + args.split)
         
+    #attack()

@@ -174,10 +174,7 @@ def preprocess(img, min_size=600, max_size=1000):
     img = skimage.transform.resize(img, (C, H * scale, W * scale), mode='reflect',anti_aliasing=False)
     # both the longer and shorter should be less than
     # max_size and min_size
-    if opt.caffe_pretrain:
-        normalize = caffe_normalize
-    else:
-        normalize = pytorch_normalze
+    normalize = pytorch_normalze
     return normalize(img)
 
 def pytorch_normalze(img):

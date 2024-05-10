@@ -8,14 +8,14 @@ from torchmetrics.utilities.compute import auc
 from .attack_utils import AttackResult
 from attack import PredictionScoreAttack
 from .attack_utils import cross_entropy
-from datasets_utils.dataset_tools import collate_fn
 from model import SSD300, MultiBoxLoss
 from utils_tools.roc import get_roc
-import pickle
-
+from models.utils import array_tool as at
+from datasets_utils.dataset_tools import collate_fn
+from tqdm import tqdm
 class MetricAttack(PredictionScoreAttack):
     def __init__(self, apply_softmax: bool, batch_size: int = 1, log_training: bool = True, metric_method = "Entropy"):
-        super().__init__('Entropy Attack')
+        super().__init__('loss Attack')
         self.metric = self.get_metric_method(metric_method)
         self.batch_size = batch_size
         self.theta = 0.0
@@ -23,7 +23,7 @@ class MetricAttack(PredictionScoreAttack):
         self.log_training = log_training
         
     def learn_attack_parameters(
-        self, shadow_model: nn.Module, member_dataset: torch.utils.data.Dataset, non_member_dataset: Dataset
+        self, shadow_model: nn.Module, member_dataset: torch.utils.data.Dataset, non_member_dataset: torch.utils.data.Dataset
     ):
         # Gather entropy of predictions by shadow model
         if isinstance(shadow_model, SSD300):
@@ -41,7 +41,7 @@ class MetricAttack(PredictionScoreAttack):
             shadow_model.eval()
             for i, dataset in enumerate([non_member_dataset, member_dataset]):
                 loader = DataLoader(dataset, batch_size=self.batch_size, num_workers=4, collate_fn=collate_fn, pin_memory=True, shuffle=False)
-                for  images, boxes, labels, difficulties in loader:
+                for  images, boxes, labels, difficulties in tqdm(loader):
                     images = images.to(self.device)
                     boxes = [b.to(self.device) for b in boxes]
                     labels = [l.to(self.device) for l in labels]
@@ -260,6 +260,109 @@ class MetricAttack(PredictionScoreAttack):
         else:
             raise ValueError("Not know function")
         
-    def get_loss_threshold(self,):
-        return self.theta
+
+class FasterRCNNLossAttack(MetricAttack):
+    def __init__(self, apply_softmax: bool, batch_size: int = 1, log_training: bool = True, metric_method="loss"):
+        super().__init__(apply_softmax, batch_size, log_training, metric_method)
+        self.metric = self.get_metric_method(metric_method)
+        self.batch_size = batch_size
+        self.theta = 0.0
+        self.apply_softmax = apply_softmax
+        self.log_training = log_training
+        
     
+    def learn_attack_parameters(
+        self, shadow_model: nn.Module, member_dataset: torch.utils.data.Dataset, non_member_dataset: Dataset
+    ):
+        # Gather entropy of predictions by shadow model
+        
+        shadow_model.to(self.device)
+        shadow_model.eval()
+        values = []
+        membership_labels = []
+        if self.log_training:
+            print('Compute attack model dataset')
+        with torch.no_grad():
+            shadow_model.eval()
+            for i, dataset in enumerate([non_member_dataset, member_dataset]):
+                loader = DataLoader(dataset, batch_size=self.batch_size, num_workers=1, pin_memory=True, shuffle=False)                
+                for img, bbox, label, scale in tqdm(loader):
+                    scale = at.scalar(scale)
+                    img, bbox, label = img.cuda().float(), bbox.cuda(), label.cuda()
+                    loss = shadow_model.get_loss(img, bbox, label, scale)
+                    if self.apply_softmax:
+                        prediction_scores = torch.softmax(loss, dim=1)
+                    else:
+                        prediction_scores = loss
+                    values.append(loss)
+                    membership_labels.append(torch.full((len(label),), i))
+        loss_values = torch.stack(values, dim=0).cpu().numpy()
+        membership_labels = torch.cat(membership_labels, dim=0).cpu().numpy()
+
+        # Compute threshold
+        theta_best = 0.0
+        num_corrects_best = 0
+        for theta in np.linspace(min(loss_values), max(loss_values), 100000):
+            num_corrects = (loss_values[membership_labels == 0] >=
+                            theta).sum() + (loss_values[membership_labels == 1] < theta).sum()
+            if num_corrects > num_corrects_best:
+                num_corrects_best = num_corrects
+                theta_best = theta
+        self.theta = theta_best
+        
+
+        # # Compute threshold 2
+        # self.shadow_fpr, self.shadow_tpr, self.thresholds, self.auroc = get_roc(membership_labels, -loss_values)
+        # threshold_idx = (self.shadow_tpr - self.shadow_fpr).argmax()
+        # self.theta = - self.thresholds[threshold_idx]
+        
+        if self.log_training:
+            print(
+                f'Theta set to {self.theta} achieving {num_corrects_best / (len(member_dataset) + len(non_member_dataset))}'
+            )
+        
+    
+    def predict_membership(self, target_model: nn.Module, dataset: Dataset):
+        values = []
+        scores = []
+        target_model.eval()
+        with torch.no_grad():
+            loader = DataLoader(dataset, batch_size=self.batch_size, num_workers=1, pin_memory=True, shuffle=False)                
+            for img, bbox, label, scale in loader:
+                scale = at.scalar(scale)
+                img, bbox, label = img.cuda().float(), bbox.cuda(), label.cuda()
+                loss = target_model.get_loss(img, bbox, label, scale)
+                if self.apply_softmax:
+                    prediction_scores = torch.softmax(loss, dim=1)
+                else:
+                    prediction_scores = loss
+                values.append(loss)
+                scores.append(torch.tensor([loss.cpu().item(),loss.cpu().item()])) # TODO, no scores, so score is replaced by loss
+                
+        values = torch.stack(values, dim=0) #torch
+        scores = torch.cat(scores) if len(scores) > 0 else torch.empty(0)
+
+        print("Threshold: ", self.theta)
+        nums_member = sum(values < self.theta)
+        nums_non_member = sum(values > self.theta)
+        print("Number of members: ", nums_member)
+        print("Number of non members: ", nums_non_member)
+        
+        return (values < self.theta).cpu().numpy(), scores, -values.cpu()
+
+    def get_attack_model_prediction_scores(self, target_model: nn.Module, dataset: Dataset) -> torch.Tensor:
+        values = []
+        target_model.eval()
+        with torch.no_grad():
+            loader = DataLoader(dataset, batch_size=self.batch_size, num_workers=1, pin_memory=True, shuffle=False)
+            for img, bbox, label, scale in loader:
+                scale = at.scalar(scale)
+                img, bbox, label = img.cuda().float(), bbox.cuda(), label.cuda()
+                loss = target_model.get_loss(img, bbox, label, scale)
+                if self.apply_softmax:
+                    pred_scores = torch.softmax(loss, dim=1)
+                else:
+                    pred_scores = loss
+                values.append(loss)
+        values = torch.stack(values, dim=0)
+        return values.cpu()

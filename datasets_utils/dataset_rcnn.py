@@ -7,6 +7,9 @@ from torchvision import transforms as tvtsf
 import numpy as np
 from models.faster_rcnn import opt
 import random
+from models.utils.eval_tool import eval_detection_voc
+import torch
+from tqdm import tqdm
 
 def inverse_normalize(img):
     if opt.caffe_pretrain:
@@ -192,7 +195,7 @@ class Transform(object):
         _, o_H, o_W = img.shape
         scale = o_H / H
         bbox = resize_bbox(bbox, (H, W), (o_H, o_W))
-
+        
         # horizontally flip
         img, params = random_flip(
             img, x_random=True, return_param=True)
@@ -205,12 +208,11 @@ class Transform(object):
 class Dataset:
     def __init__(self, opt, data_name='VOC2007+2012'):
         self.opt = opt
-        self.database = VOCBboxDataset(opt.voc_data_dir, data_name=data_name)
+        self.database = VOCBboxDataset(opt.voc_data_dir, use_difficult=True, data_name=data_name)
         self.tsf = Transform(opt.min_size, opt.max_size)
         
     def __getitem__(self, idx):
         ori_img, bbox, label, difficult = self.database[idx]
-
         img, bbox, label, scale = self.tsf((ori_img, bbox, label))
         # TODO: check whose stride is negative to fix this instead copy all
         # some of the strides of a given numpy array are negative.
@@ -232,3 +234,87 @@ class TestDataset:
 
     def __len__(self):
         return len(self.db)
+
+#action 1.train(Augmentation) 2.eval 3.attack(No, augmentation)
+class VOCDataset:
+    def __init__(self, opt, split='trainval', use_difficult=True, data_name='VOC2007+2012', action='train'):
+        self.opt = opt
+        self.database = VOCBboxDataset(opt.voc_data_dir, split=split, use_difficult=use_difficult, data_name=data_name)
+        self.tsf = Transform(opt.min_size, opt.max_size)
+        self.split = split
+        self.action = action
+        self.min_size = opt.min_size
+        self.max_size = opt.max_size
+    def __getitem__(self, idx):
+        ori_img, bbox, label, difficult = self.database[idx]
+        if self.action == 'eval':
+            img = preprocess(ori_img)
+            return img, ori_img.shape[1:], bbox, label, difficult
+        elif self.action == 'train':
+            img, bbox, label, scale = self.tsf((ori_img, bbox, label))
+            # TODO: check whose stride is negative to fix this instead copy all
+            # some of the strides of a given numpy array are negative.
+            return img.copy(), bbox.copy(), label.copy(), scale
+        elif self.action == 'attack':
+            _, H, W = ori_img.shape
+            img = preprocess(ori_img, self.min_size, self.max_size)
+            _, o_H, o_W = img.shape
+            scale = o_H / H
+            bbox = resize_bbox(bbox, (H, W), (o_H, o_W))
+            return img, bbox, label, scale
+        else:
+            raise ValueError
+
+    def __len__(self):
+        return len(self.database)
+    
+    
+def eval(dataloader, faster_rcnn, test_num=10000):
+    pred_bboxes, pred_labels, pred_scores = list(), list(), list()
+    gt_bboxes, gt_labels, gt_difficults = list(), list(), list()
+    for ii, (imgs, sizes, gt_bboxes_, gt_labels_, gt_difficults_) in tqdm(enumerate(dataloader)):
+        sizes = [sizes[0][0].item(), sizes[1][0].item()]
+        pred_bboxes_, pred_labels_, pred_scores_ = faster_rcnn.predict(imgs, [sizes])
+        gt_bboxes += list(gt_bboxes_.numpy())
+        gt_labels += list(gt_labels_.numpy())
+        gt_difficults += list(gt_difficults_.numpy())
+        pred_bboxes += pred_bboxes_
+        pred_labels += pred_labels_
+        pred_scores += pred_scores_
+        if ii == test_num: break
+
+    result = eval_detection_voc(
+        pred_bboxes, pred_labels, pred_scores,
+        gt_bboxes, gt_labels, gt_difficults,
+        use_07_metric=True)
+    return result
+
+def collate_fn(batch):
+        """
+        Since each image may have a different number of objects, we need a collate function (to be passed to the DataLoader).
+
+        This describes how to combine these tensors of different sizes. We use lists.
+
+        Note: this need not be defined in this Class, can be standalone.
+
+        :param batch: an iterable of N sets from __getitem__()
+        :return: a tensor of images, lists of varying-size tensors of bounding boxes, labels, and difficulties
+        """
+
+        images = list()
+        boxes = list()
+        labels = list()
+        scale = list()
+
+        for b in batch:
+            image = torch.from_numpy(b[0]).unsqueeze(0)
+            images.append(image)
+            boxes.append(torch.from_numpy(b[1]).unsqueeze(0))
+            labels.append(torch.from_numpy(b[2]).unsqueeze(0))
+            scale.append(b[3])
+            
+        # images = torch.tensor(images)
+        # boxes = torch.tensor(boxes)
+        # labels = torch.tensor(labels)
+        # scale   = torch.tensor(scale)
+        return images, boxes, labels, scale  

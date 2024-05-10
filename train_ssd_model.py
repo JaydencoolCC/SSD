@@ -228,7 +228,7 @@ def train_epoch(train_loader, model, criterion, optimizer, epoch, privacy_engine
 
         # Loss
         loss = criterion(predicted_locs, predicted_scores, boxes, labels)  # scalar
-        print(loss)
+        #print(loss)
         # Backward prop.
         loss.backward()
 

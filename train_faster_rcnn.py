@@ -3,7 +3,7 @@ from tqdm import tqdm
 import os
 os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 from models.faster_rcnn import opt
-from datasets_utils.dataset_rcnn import Dataset, TestDataset, collate_fn
+from datasets_utils.dataset_rcnn import Dataset, TestDataset
 from models.faster_rcnn_vgg16 import FasterRCNNVGG16
 from example.trainer import FasterRCNNTrainer
 from models.utils import array_tool as at
@@ -14,7 +14,7 @@ import argparse
 
 parser = argparse.ArgumentParser(description='Faster RCNN')
 parser.add_argument('--model_type', default='target', type=str)
-parser.add_argument('--dataset_name', default='VOC2007+2012', type=str, help='VOC2007+2012, VOC2007, VOC2012')
+parser.add_argument('--dataset_name', default='VOC2007', type=str, help='VOC2007+2012, VOC2007, VOC2012')
 parser.add_argument('--train_size', default=8275, type=int)
 parser.add_argument('--test_size', default=2476, type=int)
 
@@ -90,23 +90,25 @@ def train(**kwargs):
 
     if(args.dataset_name == 'VOC2007+2012'):
         decay_lr_at = [12000, 16000]
-        max_iter = 18000    
+        max_iter = 18000     
         decay_lr_epoch = [it // (train_dataset_size // 16) for it in decay_lr_at] # iter to epoch
         epochs = max_iter // (train_dataset_size // 16)
     elif(args.dataset_name == 'VOC2007'):
-        #TODO
-        pass
+        decay_lr_at = [4000, 5000]
+        max_iter = 6000
+        decay_lr_epoch = [it // (train_dataset_size // 16) for it in decay_lr_at] # iter to epoch
+        epochs = max_iter // (train_dataset_size // 16)
     elif(args.dataset_name == 'VOC2012'):
         #TODO
         pass
     
     print("decay_lr_epoch: %s epochs: %s" % (decay_lr_epoch, epochs))
-    faster_rcnn = FasterRCNNVGG16()
+    faster_rcnn = FasterRCNNVGG16().cuda()
     
     print('model construct completed')
     trainer = FasterRCNNTrainer(faster_rcnn).cuda()
     
-    addition = args.model_type + '_epoch_' + str(epochs)
+    addition = args.model_type + '_epoch_' + str(epochs) + '_%s_'%args.dataset_name
     if(args.model_type == "target"):
         trainDataLoader = trainDataLoader_target
         testDataLoader = testDataLoade_target
@@ -125,10 +127,14 @@ def train(**kwargs):
     lr_ = opt.lr
     for epoch in range(epochs):
         trainer.reset_meters()
+        total_loss = []
         for ii, (img, bbox, label, scale) in tqdm(enumerate(trainDataLoader)):
             scale = at.scalar(scale)
             img, bbox, label = img.cuda().float(), bbox.cuda(), label.cuda()
-            trainer.train_step(img, bbox, label, scale)
+            loss = trainer.train_step(img, bbox, label, scale)
+            total_loss.append(loss)
+            
+        print("epoch: %d   loss: %f" % (epoch, sum(total_loss)/len(total_loss)))
 
         eval_result = eval(testDataLoader, faster_rcnn, test_num=opt.test_num)
         print(eval_result)

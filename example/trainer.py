@@ -174,7 +174,7 @@ class FasterRCNNTrainer(nn.Module):
         losses.total_loss.backward()
         self.optimizer.step()
         self.update_meters(losses)
-        return losses
+        return losses.total_loss
     
     '''
     LossTuple = namedtuple('LossTuple',
@@ -188,7 +188,7 @@ class FasterRCNNTrainer(nn.Module):
     def get_loss(self, imgs, bboxes, labels, scale):
         self.faster_rcnn.eval()
         losses = self.forward(imgs, bboxes, labels, scale)
-        return losses.total_loss
+        return losses.roi_cls_loss + losses.rpn_cls_loss
         
     def save(self, save_optimizer=False, save_path=None, addition=None, **kwargs):
         """serialize models include optimizer and other info
