@@ -3,20 +3,19 @@ from pprint import PrettyPrinter
 import pickle
 import argparse
 import os
-os.environ["CUDA_VISIBLE_DEVICES"] = "4"
+os.environ["CUDA_VISIBLE_DEVICES"] = "7"
 from datasets import PascalVOCDataset
 from utils import *
 from utils_tools.utils import get_temp_calibrated_models
 from attack import ThresholdAttack, SalemAttack, EntropyAttack, MetricAttack, DetAttack
 from datasets_utils.dataset_tools import get_train_val_split, get_subsampled_dataset, print_attack_results, get_member_non_member_split, collate_fn
 
-from model import SSD300, MultiBoxLoss
+from models.ssd import SSD300, MultiBoxLoss
 from utils_tools.loss import AttackLoss
 # argparse
 parser = argparse.ArgumentParser(description='PyTorch SSD Evaluation')
-parser.add_argument('--checkpoint_target', default='./checkpoint/target_newssd300.pth.tar', type=str, help='Checkpoint path')
-parser.add_argument('--checkpoint_shadow', default='./checkpoint/shadow_newssd300.pth.tar', type=str, help='Checkpoint path')
-parser.add_argument('--data_folder', default='./data', type=str, help='Data folder')
+parser.add_argument('--checkpoint_target', default='./checkpoint/ssd/target_voc07_epochs_96_ssd300.pth.tar', type=str, help='Checkpoint path')
+parser.add_argument('--checkpoint_shadow', default='./checkpoint/ssd/shadow_voc07_epochs_96_ssd300.pth.tar', type=str, help='Checkpoint path')
 parser.add_argument('--batch_size', default=64, type=int, help='Batch size for evaluation')
 parser.add_argument('--workers', default=4, type=int, help='Number of workers used in dataloading')
 parser.add_argument('--keep_difficult', default=True, type=bool, help='Keep difficult ground truth objects in evaluation')
@@ -27,18 +26,20 @@ parser.add_argument('--seed', default=42, type=int, help='seed')
 parser.add_argument('--cuda', default=1, type=int, help='chose cuda')
 parser.add_argument('--use_temp', action='store_true', help='use temperature scaling')
 parser.add_argument('--temp_value', default=5, type=float, help='temperature value')
+parser.add_argument('--dataset_name', default='voc07', type=str, help='voc07+12, voc07')
+parser.add_argument('--data_folder', default='./data', type=str, help='Data folder')
 
 args = parser.parse_args()
 
 # Good formatting when printing the APs for each class and mAP
 pp = PrettyPrinter()
 # Parameters
-data_folder = './data'
+data_folder = os.path.join(args.data_folder, args.dataset_name) # folder with data files
+
 keep_difficult = True  # difficult ground truth objects must always be considered in mAP calculation, because these objects DO exist!
 batch_size = 1
 workers = 4
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-checkpoint = './checkpoint/epoch_400_ssd300.pth.tar'
 checkpoint_target = args.checkpoint_target
 checkpoint_shadow = args.checkpoint_shadow
 
@@ -195,7 +196,7 @@ def evaluate(test_loader, model, model_target, model_shadow):
             #ThresholdAttack(apply_softmax= False, batch_size=64),
             MetricAttack(apply_softmax=False, batch_size=1),
             #DetAttack(apply_softmax=False, batch_size=1)
-            EntropyAttack(apply_softmax=False, batch_size=1)
+            #EntropyAttack(apply_softmax=False, batch_size=1)
             ]
 
     name = [
