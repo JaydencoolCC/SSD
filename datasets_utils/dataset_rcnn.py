@@ -235,7 +235,7 @@ class TestDataset:
     def __len__(self):
         return len(self.db)
 
-#action 1.train(Augmentation) 2.eval 3.attack(No, augmentation)
+#action 1.train(Augmentation) 2.eval 3.attack(No augmentation)
 class VOCDataset:
     def __init__(self, opt, split='trainval', use_difficult=True, data_name='VOC2007+2012', action='train'):
         self.opt = opt
@@ -272,7 +272,7 @@ class VOCDataset:
 def eval(dataloader, faster_rcnn, test_num=10000):
     pred_bboxes, pred_labels, pred_scores = list(), list(), list()
     gt_bboxes, gt_labels, gt_difficults = list(), list(), list()
-    for ii, (imgs, sizes, gt_bboxes_, gt_labels_, gt_difficults_) in tqdm(enumerate(dataloader)):
+    for ii, (imgs, sizes, gt_bboxes_, gt_labels_, gt_difficults_) in enumerate(tqdm(dataloader)):
         sizes = [sizes[0][0].item(), sizes[1][0].item()]
         pred_bboxes_, pred_labels_, pred_scores_ = faster_rcnn.predict(imgs, [sizes])
         gt_bboxes += list(gt_bboxes_.numpy())

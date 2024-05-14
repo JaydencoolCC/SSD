@@ -8,7 +8,7 @@ from torchmetrics.utilities.compute import auc
 from .attack_utils import AttackResult
 from attack import PredictionScoreAttack
 from .attack_utils import cross_entropy
-from model import SSD300, MultiBoxLoss
+from models.ssd import SSD300, MultiBoxLoss
 from utils_tools.roc import get_roc
 from models.utils import array_tool as at
 from datasets_utils.dataset_tools import collate_fn

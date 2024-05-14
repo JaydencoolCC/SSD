@@ -166,6 +166,7 @@ class FasterRCNNTrainer(nn.Module):
         losses = [rpn_loc_loss, rpn_cls_loss, roi_loc_loss, roi_cls_loss]
         losses = losses + [sum(losses)]
 
+        del imgs, bboxes, labels
         return LossTuple(*losses)
 
     def train_step(self, imgs, bboxes, labels, scale):
@@ -173,7 +174,7 @@ class FasterRCNNTrainer(nn.Module):
         losses = self.forward(imgs, bboxes, labels, scale)
         losses.total_loss.backward()
         self.optimizer.step()
-        self.update_meters(losses)
+        #self.update_meters(losses)
         return losses.total_loss
     
     '''
@@ -188,9 +189,9 @@ class FasterRCNNTrainer(nn.Module):
     def get_loss(self, imgs, bboxes, labels, scale):
         self.faster_rcnn.eval()
         losses = self.forward(imgs, bboxes, labels, scale)
-        return losses.roi_cls_loss + losses.rpn_cls_loss
+        return losses.total_loss
         
-    def save(self, save_optimizer=False, save_path=None, addition=None, **kwargs):
+    def save(self, save_optimizer=False, save_path=None, addition=None, epoch=None, **kwargs):
         """serialize models include optimizer and other info
         return path where the model-file is stored.
 
@@ -206,7 +207,8 @@ class FasterRCNNTrainer(nn.Module):
 
         save_dict['model'] = self.faster_rcnn.state_dict()
         save_dict['config'] = opt._state_dict()
-        save_dict['other_info'] = kwargs
+        save_dict['epoch'] = epoch
+        save_dict['other_info'] = kwargs        
         #save_dict['vis_info'] = self.vis.state_dict()
 
         if save_optimizer:

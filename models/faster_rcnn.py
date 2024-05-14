@@ -5,7 +5,6 @@ import numpy as np
 from models.utils import array_tool as at
 from models.utils.bbox_tools import loc2bbox
 from torchvision.ops import nms
-# from model.utils.nms import non_maximum_suppression
 
 from torch import nn
 from datasets_utils.dataset_tools import preprocess
@@ -296,8 +295,8 @@ class Config:
     voc_data_dir = 'data/VOCdevkit/'
     min_size = 600  # image resize
     max_size = 1000 # image resize
-    num_workers = 4
-    test_num_workers = 4
+    num_workers = 0
+    test_num_workers = 0
     batch_size = 1
 
     # sigma for l1_smooth_loss
