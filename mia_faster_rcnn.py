@@ -18,8 +18,8 @@ from models.faster_rcnn_vgg16 import FasterRCNNVGG16
 
 # argparse
 parser = argparse.ArgumentParser(description='PyTorch SSD Evaluation')
-parser.add_argument('--checkpoint_target', default='./checkpoints/fasterrcnn/fasterrcnn_target_epoch_17', type=str, help='Checkpoint path')
-parser.add_argument('--checkpoint_shadow', default='./checkpoints/fasterrcnn/fasterrcnn_shadow_epoch_17', type=str, help='Checkpoint path')
+parser.add_argument('--checkpoint_target', default='./checkpoints/fasterrcnn/fasterrcnn_target_epoch_19_VOC2007_', type=str, help='Checkpoint path')
+parser.add_argument('--checkpoint_shadow', default='./checkpoints/fasterrcnn/fasterrcnn_shadow_epoch_19_VOC2007_', type=str, help='Checkpoint path')
 parser.add_argument('--data_folder', default='./data', type=str, help='Data folder')
 parser.add_argument('--batch_size', default=1, type=int, help='Batch size for evaluation')
 parser.add_argument('--workers', default=4, type=int, help='Number of workers used in dataloading')
@@ -31,6 +31,7 @@ parser.add_argument('--seed', default=42, type=int, help='seed')
 parser.add_argument('--cuda', default=1, type=int, help='chose cuda')
 parser.add_argument('--use_temp', action='store_true', help='use temperature scaling')
 parser.add_argument('--temp_value', default=5, type=float, help='temperature value')
+parser.add_argument('--dataset_name', default='VOC2007', type=str, help='VOC2007+2012, voc07')
 
 args = parser.parse_args()
 
@@ -63,7 +64,7 @@ model_shadow = model_shadow.to(device)
 model_target.eval()
 model_shadow.eval()
 
-train_dataset = VOCDataset(opt, data_name='VOC2007+2012', action='attack')
+train_dataset = VOCDataset(opt, data_name=args.dataset_name, action='attack')
 
 test_dataset = VOCDataset(opt, split='test', data_name='VOC2007', action='attack')
 
@@ -108,8 +109,8 @@ member_shadow, non_member_shadow = get_member_non_member_split(train_shadow, tes
 
 
 def evaluate(test_loader, model_target, model_shadow):
-    # eval_result = eval(test_loader, model_target, test_num=opt.test_num)
-    # print(eval_result)
+    eval_result = eval(test_loader, model_target, test_num=opt.test_num)
+    print(eval_result)
 
     
     model_target = FasterRCNNTrainer(model_target).cuda()
@@ -173,16 +174,29 @@ if __name__ == '__main__':
     print(len(non_member_target))
     print(args.split)
     
-    #eval_dataset = VOCDataset(opt, data_name='VOC2007', split='test', action='eval')
-    test_dataset = TestDataset(opt, split='test', data_name='VOC2007')
-    eval_dataset_loader = torch.utils.data.DataLoader(test_dataset, batch_size=1, shuffle=False,
+    eval_dataset_test = VOCDataset(opt, data_name='VOC2007', action='eval', split='test')
+    eval_dataset_train = VOCDataset(opt, data_name=args.dataset_name, action='eval')
+    
+    eval_size_test = len(eval_dataset_test) // 2
+    eval_size_train = len(eval_dataset_train) // 2
+    
+    eval_dataset_test = get_subsampled_dataset(eval_dataset_test, dataset_size=eval_size_test*2, proportion=None)
+    eval_target_test, eval_shadow_test = get_train_val_split(eval_dataset_test, eval_size_test, seed=args.seed, stratify=False, targets=None)
+    
+    eval_dataset_train = get_subsampled_dataset(eval_dataset_train, dataset_size=eval_size_train*2, proportion=None)
+    eval_target_train, eval_shadow_test = get_train_val_split(eval_dataset_train, eval_size_train, seed=args.seed, stratify=False, targets=None)
+    
+    eval_dataset_loader_test = torch.utils.data.DataLoader(eval_target_test, batch_size=1, shuffle=False,
                                            num_workers=num_workers,
-                                           pin_memory=True)  # note that we're passing the collate fun
+                                           pin_memory=False) 
+    eval_dataset_loader_train = torch.utils.data.DataLoader(eval_target_train, batch_size=1, shuffle=False,
+                                           num_workers=num_workers,
+                                           pin_memory=False)  
     
     if args.split == "member":
-        evaluate(member_target_loader, model_target, model_shadow)
+        evaluate(eval_dataset_loader_train, model_target, model_shadow)
     elif args.split == "non_member":
-        evaluate(non_member_target_loader, model_target, model_shadow)
+        evaluate(eval_dataset_loader_test, model_target, model_shadow)
     else:
         raise ValueError("Invalid data_type: " + args.split)
         

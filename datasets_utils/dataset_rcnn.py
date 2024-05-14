@@ -248,12 +248,10 @@ class VOCDataset:
     def __getitem__(self, idx):
         ori_img, bbox, label, difficult = self.database[idx]
         if self.action == 'eval':
-            img = preprocess(ori_img)
+            img = preprocess(ori_img, self.min_size, self.max_size)
             return img, ori_img.shape[1:], bbox, label, difficult
         elif self.action == 'train':
             img, bbox, label, scale = self.tsf((ori_img, bbox, label))
-            # TODO: check whose stride is negative to fix this instead copy all
-            # some of the strides of a given numpy array are negative.
             return img.copy(), bbox.copy(), label.copy(), scale
         elif self.action == 'attack':
             _, H, W = ori_img.shape
