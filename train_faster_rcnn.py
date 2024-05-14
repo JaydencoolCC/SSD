@@ -1,9 +1,9 @@
 import matplotlib
 from tqdm import tqdm
 import os
-os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+os.environ["CUDA_VISIBLE_DEVICES"] = "5"
 from models.faster_rcnn import opt
-from datasets_utils.dataset_rcnn import Dataset, TestDataset
+from datasets_utils.dataset_rcnn import Dataset, TestDataset, VOCDataset
 from models.faster_rcnn_vgg16 import FasterRCNNVGG16
 from example.trainer import FasterRCNNTrainer
 from models.utils import array_tool as at
@@ -14,13 +14,18 @@ import argparse
 
 parser = argparse.ArgumentParser(description='Faster RCNN')
 parser.add_argument('--model_type', default='target', type=str)
-parser.add_argument('--dataset_name', default='VOC2007', type=str, help='VOC2007+2012, VOC2007, VOC2012')
+parser.add_argument('--dataset_name', default='VOC2007+2012', type=str, help='VOC2007+2012, voc07')
 parser.add_argument('--train_size', default=8275, type=int)
 parser.add_argument('--test_size', default=2476, type=int)
-
+parser.add_argument('--load_path', default='checkpoints/fasterrcnn/fasterrcnn_shadow_epoch_17', type=str)
+parser.add_argument('--epochs', default=None, type=int)
 args = parser.parse_args()
 
+# torch.backends.cudnn.enabled = True
+# torch.backends.cudnn.benchmark = True 
+
 torch.set_num_threads(2)
+
 def eval(dataloader, faster_rcnn, test_num=10000):
     pred_bboxes, pred_labels, pred_scores = list(), list(), list()
     gt_bboxes, gt_labels, gt_difficults = list(), list(), list()
@@ -45,9 +50,9 @@ def eval(dataloader, faster_rcnn, test_num=10000):
 def train(**kwargs):
     opt._parse(kwargs)
     # # Custom dataloaders
-    train_dataset = Dataset(opt, data_name='VOC2007+2012')
+    train_dataset = VOCDataset(opt, data_name=args.dataset_name, action='train')
     train_dataset_size = len(train_dataset)
-    test_dataset = TestDataset(opt, split='test', data_name='VOC2007')
+    test_dataset = VOCDataset(opt, split='test', data_name="VOC2007", action='eval')
 
     train_size = len(train_dataset) // 2
     test_size = len(test_dataset) // 2
@@ -74,7 +79,7 @@ def train(**kwargs):
                                        batch_size=1,
                                        num_workers=opt.num_workers,
                                        shuffle=False,
-                                       pin_memory=True,
+                                       pin_memory=False,
                                        )
     
     
@@ -82,7 +87,7 @@ def train(**kwargs):
                                        batch_size=1,
                                        num_workers=opt.num_workers,
                                        shuffle=False,
-                                       pin_memory=True,
+                                       pin_memory=False,
                                        )
 
     print("train target dataset: {}".format(len(train_target)))
@@ -98,17 +103,18 @@ def train(**kwargs):
         max_iter = 6000
         decay_lr_epoch = [it // (train_dataset_size // 16) for it in decay_lr_at] # iter to epoch
         epochs = max_iter // (train_dataset_size // 16)
-    elif(args.dataset_name == 'VOC2012'):
-        #TODO
-        pass
-    
+    else:
+        raise ValueError("dataset name is error")
+    if (args.epochs is not None):
+        epochs = args.epochs
+        
     print("decay_lr_epoch: %s epochs: %s" % (decay_lr_epoch, epochs))
     faster_rcnn = FasterRCNNVGG16().cuda()
     
     print('model construct completed')
     trainer = FasterRCNNTrainer(faster_rcnn).cuda()
     
-    addition = args.model_type + '_epoch_' + str(epochs) + '_%s_'%args.dataset_name
+    addition = args.model_type + '_epoch_' + str(epochs) + '_%s'%args.dataset_name
     if(args.model_type == "target"):
         trainDataLoader = trainDataLoader_target
         testDataLoader = testDataLoade_target
@@ -119,37 +125,35 @@ def train(**kwargs):
         raise ValueError("Invalid type")
         
     #load model
-    if opt.load_path:
-        trainer.load(opt.load_path)
-        print('load pretrained model from %s' % opt.load_path)
+    if args.load_path is not None:
+        trainer.load(args.load_path)
+        print('load pretrained model from %s' % args.load_path)
         
     best_map = 0
     lr_ = opt.lr
-    for epoch in range(epochs):
-        trainer.reset_meters()
+    start_epoch = 0
+    for epoch in range(start_epoch, epochs):
         total_loss = []
-        for ii, (img, bbox, label, scale) in tqdm(enumerate(trainDataLoader)):
+        for ii, (img, bbox, label, scale) in enumerate(tqdm(trainDataLoader)):
             scale = at.scalar(scale)
             img, bbox, label = img.cuda().float(), bbox.cuda(), label.cuda()
             loss = trainer.train_step(img, bbox, label, scale)
-            total_loss.append(loss)
+            total_loss.append(loss.item())
             
         print("epoch: %d   loss: %f" % (epoch, sum(total_loss)/len(total_loss)))
 
-        eval_result = eval(testDataLoader, faster_rcnn, test_num=opt.test_num)
+        eval_result = eval(testDataLoader, trainer.faster_rcnn, test_num=10000)
         print(eval_result)
         lr_ = trainer.faster_rcnn.optimizer.param_groups[0]['lr']
-    
 
         if eval_result['map'] > best_map:
             best_map = eval_result['map']
-            #best_path = trainer.save(best_map=best_map)
         if epoch in decay_lr_epoch:
             trainer.faster_rcnn.scale_lr(opt.lr_decay)
             lr_ = lr_ * opt.lr_decay
 
         if epoch == epochs-1: 
-            save_path = trainer.save(addition=addition)
+            save_path = trainer.save(addition=addition, epoch=epoch+1)
             break
         
         print("eval result: ", best_map)

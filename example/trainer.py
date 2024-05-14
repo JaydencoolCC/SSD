@@ -1,7 +1,6 @@
 from __future__ import  absolute_import
 import os
 from collections import namedtuple
-import time
 from torch.nn import functional as F
 from models.utils.creator_tool import AnchorTargetCreator, ProposalTargetCreator
 
@@ -55,14 +54,9 @@ class FasterRCNNTrainer(nn.Module):
         self.loc_normalize_std = faster_rcnn.loc_normalize_std
 
         self.optimizer = self.faster_rcnn.get_optimizer()
-        # visdom wrapper
-        #self.vis = Visualizer(env=opt.env)
 
         # indicators for training status
-        self.rpn_cm = ConfusionMeter(2)
-        self.roi_cm = ConfusionMeter(21)
-        self.meters = {k: AverageValueMeter() for k in LossTuple._fields}  # average loss
-
+        
     def forward(self, imgs, bboxes, labels, scale):
         """Forward Faster R-CNN and calculate losses.
 
@@ -143,7 +137,6 @@ class FasterRCNNTrainer(nn.Module):
         rpn_cls_loss = F.cross_entropy(rpn_score, gt_rpn_label.cuda(), ignore_index=-1)
         _gt_rpn_label = gt_rpn_label[gt_rpn_label > -1]
         _rpn_score = at.tonumpy(rpn_score)[at.tonumpy(gt_rpn_label) > -1]
-        self.rpn_cm.add(at.totensor(_rpn_score, False), _gt_rpn_label.data.long())
 
         # ------------------ ROI losses (fast rcnn loss) -------------------#
         n_sample = roi_cls_loc.shape[0]
@@ -161,7 +154,6 @@ class FasterRCNNTrainer(nn.Module):
 
         roi_cls_loss = nn.CrossEntropyLoss()(roi_score, gt_roi_label.cuda())
 
-        self.roi_cm.add(at.totensor(roi_score, False), gt_roi_label.data.long())
 
         losses = [rpn_loc_loss, rpn_cls_loss, roi_loc_loss, roi_cls_loss]
         losses = losses + [sum(losses)]
@@ -174,7 +166,6 @@ class FasterRCNNTrainer(nn.Module):
         losses = self.forward(imgs, bboxes, labels, scale)
         losses.total_loss.backward()
         self.optimizer.step()
-        #self.update_meters(losses)
         return losses.total_loss
     
     '''
@@ -209,14 +200,11 @@ class FasterRCNNTrainer(nn.Module):
         save_dict['config'] = opt._state_dict()
         save_dict['epoch'] = epoch
         save_dict['other_info'] = kwargs        
-        #save_dict['vis_info'] = self.vis.state_dict()
 
         if save_optimizer:
             save_dict['optimizer'] = self.optimizer.state_dict()
 
         if save_path is None:
-            timestr = time.strftime('%m%d%H%M')
-            
             if addition is not None:
                 save_path = 'checkpoints/fasterrcnn/fasterrcnn_' + addition
             
@@ -226,9 +214,7 @@ class FasterRCNNTrainer(nn.Module):
         save_dir = os.path.dirname(save_path)
         if not os.path.exists(save_dir):
             os.makedirs(save_dir)
-
         t.save(save_dict, save_path)
-        #self.vis.save([self.vis.env])
         return save_path
 
     def load(self, path, load_optimizer=True, parse_opt=False,):
@@ -243,21 +229,6 @@ class FasterRCNNTrainer(nn.Module):
         if 'optimizer' in state_dict and load_optimizer:
             self.optimizer.load_state_dict(state_dict['optimizer'])
         return self
-
-    def update_meters(self, losses):
-        loss_d = {k: at.scalar(v) for k, v in losses._asdict().items()}
-        for key, meter in self.meters.items():
-            meter.add(loss_d[key])
-
-    def reset_meters(self):
-        for key, meter in self.meters.items():
-            meter.reset()
-        self.roi_cm.reset()
-        self.rpn_cm.reset()
-
-    def get_meter_data(self):
-        return {k: v.value()[0] for k, v in self.meters.items()}
-
 
 def _smooth_l1_loss(x, t, in_weight, sigma):
     sigma2 = sigma ** 2
