@@ -3,7 +3,7 @@ import torch.backends.cudnn as cudnn
 import torch.optim
 import torch.utils.data
 import os
-os.environ["CUDA_VISIBLE_DEVICES"] = "5"
+os.environ["CUDA_VISIBLE_DEVICES"] = "4"
 from model import SSD300, MultiBoxLoss
 from datasets import PascalVOCDataset
 from utils import *
@@ -25,11 +25,13 @@ parser.add_argument("--disable_dp",action="store_true", default=False, help="Dis
 parser.add_argument("--sigma", type=float, default=1.2, metavar="S", help="Noise multiplier")
 parser.add_argument("--max_per_sample_grad_norm", type=float, default=1.0, metavar="C", help="Clip per-sample gradients to this norm")
 parser.add_argument("--delta", type=float, default=1e-5, metavar="D", help="Target delta") 
-
+parser.add_argument('--dataset_name', default='voc07', type=str, help='voc07+12, voc07')
+parser.add_argument('--epochs', default=None, type=int)
+parser.add_argument('--data_folder', default='./data', type=str)
 args = parser.parse_args()
 
 # Data parameters
-data_folder = './data'  # folder with data files
+data_folder = os.path.join(args.data_folder, args.dataset_name) # folder with data files
 keep_difficult = True  # use objects considered difficult to detect?
 
 # Model parameters
@@ -138,14 +140,24 @@ def main():
     # Calculate total number of epochs to train and the epochs to decay learning rate at (i.e. convert iterations to epochs)
     # To convert iterations to epochs, divide iterations by the number of iterations per epoch
     # The paper trains for 120,000 iterations with a batch size of 32, decays after 80,000 and 100,000 iterations
+    if(args.dataset_name == "voc07"):
+        iterations = 30000
+        decay_lr_at = [20000, 25000]
+    elif(args.dataset_name == "voc07+12"):
+        decay_lr_at = [80000, 100000]
+        iterations = 120000
+        
     epochs = iterations // (len(train_dataset) // 32)
     decay_lr_at = [it // (len(train_dataset) // 32) for it in decay_lr_at]
-
-    # Epochs
-    #epochs = 1
-    print("Training %s model" % args.model_type)
     
-    addition = args.model_type + "_" + "new"
+    # Epochs
+    if(args.epochs is not None):
+        epochs=1
+        
+    print("Training %s model  epochs %d" % (args.model_type, epochs))
+    print("decay_lr_at:", decay_lr_at)
+    
+    addition = args.model_type + "_epochs_" + str(epochs) + "_" + args.dataset_name
     if(args.label_smoothing):
         addition += "LS_" + str(args.factor) +"_"
     if(args.dropout):
@@ -175,6 +187,7 @@ def main():
     train(trainDataLoader, model, criterion, optimizer, epochs, addition, privacy_engine)
     
 def train(train_loader, model, criterion, optimizer, epochs, addition, privacy_engine):
+    file_path = "./checkpoint/ssd/"
     for epoch in range(start_epoch, epochs):
 
         # Decay learning rate at particular epochs
@@ -190,7 +203,8 @@ def train(train_loader, model, criterion, optimizer, epochs, addition, privacy_e
               privacy_engine=privacy_engine)
 
         # Save checkpoint
-        save_checkpoint(epoch, model, optimizer, addition)
+        if(epoch == epochs-1):
+            save_checkpoint(epoch+1, model, optimizer, addition, file_path)
 
 
 def train_epoch(train_loader, model, criterion, optimizer, epoch, privacy_engine):

@@ -17,7 +17,7 @@ parser.add_argument('--model_type', default='target', type=str)
 parser.add_argument('--dataset_name', default='VOC2007+2012', type=str, help='VOC2007+2012, voc07')
 parser.add_argument('--train_size', default=8275, type=int)
 parser.add_argument('--test_size', default=2476, type=int)
-parser.add_argument('--load_path', default='checkpoints/fasterrcnn/fasterrcnn_shadow_epoch_17', type=str)
+parser.add_argument('--load_path', default='None', type=str)
 parser.add_argument('--epochs', default=None, type=int)
 args = parser.parse_args()
 
