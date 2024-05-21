@@ -8,7 +8,7 @@ import torchvision
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
-class AttackLoss(nn.Module):
+class AttackLoss_v1(nn.Module):
     """
     The MultiBox loss, a loss function for object detection.
 
@@ -18,7 +18,7 @@ class AttackLoss(nn.Module):
     """
 
     def __init__(self, threshold=0.5, neg_pos_ratio=3, alpha=1.):
-        super(AttackLoss, self).__init__()
+        super(AttackLoss_v1, self).__init__()
         self.threshold = threshold
         self.neg_pos_ratio = neg_pos_ratio
         self.alpha = alpha
@@ -42,9 +42,6 @@ class AttackLoss(nn.Module):
         #将预测框等同于先验框
         assert len(det_boxes) == len(det_scores) and len(boxes) == len(labels)
         n_classes = len(label_map)
-        
-        #true_locs = torch.zeros((batch_size, n_priors, 4), dtype=torch.float).to(device)  # (N, 8732, 4)
-        #true_classes = torch.zeros((batch_size, n_priors), dtype=torch.long).to(device)  # (N, 8732)
         
         # For each image
         for i in range(1):
@@ -126,3 +123,180 @@ class AttackLoss(nn.Module):
         # TOTAL LOSS
 
         return conf_loss + self.alpha * loc_loss
+
+class AttackLoss(nn.Module):
+    """
+    The MultiBox loss, a loss function for object detection.
+
+    This is a combination of:
+    (1) a localization loss for the predicted locations of the boxes, and
+    (2) a confidence loss for the predicted class scores.
+    """
+
+    def __init__(self, threshold=0.5, neg_pos_ratio=3, alpha=1.):
+        super(AttackLoss, self).__init__()
+        self.threshold = threshold
+        self.neg_pos_ratio = neg_pos_ratio
+        self.alpha = alpha
+
+        self.smooth_l1 = nn.L1Loss()  # *smooth* L1 loss in the paper; see Remarks section in the tutorial
+        self.cross_entropy = nn.CrossEntropyLoss(reduce=False)
+
+    # 实际检测中输出的bound boxes, 是已经解码后的结果， 来自detection
+    #det_boxes, det_labels, det_scores
+
+    def forward(self, det_boxes, det_scores, det_labels, boxes, labels):
+        """
+        Forward propagation.
+
+        :param det_boxes: predicted locations/boxes w.r.t the 8732 prior boxes, a tensor of dimensions (n_objects,4)
+        :param predicted_scores: class scores for each of the encoded locations/boxes, a tensor of dimensions (N, 8732, n_classes)
+        :param boxes: true  object bounding boxes in boundary coordinates, a list of N tensors
+        :param labels: true object labels, a list of N tensors
+        :return: multibox loss, a scalar
+        """
+        #将预测框等同于先验框
+        assert len(det_boxes) == len(det_scores) and len(boxes) == len(labels)
+        n_classes = len(label_map)
+        
+        # For each image
+        for batch_id in range(1):
+            n_objects = boxes[batch_id].shape[0]
+            n_detection = det_boxes[batch_id].shape[0]
+
+            #计算gt box和预测框的iou
+            overlap = find_jaccard_overlap(boxes[batch_id],
+                                           det_boxes[batch_id])  #(n_objects, n_detection)
+            det_label = det_labels[batch_id]
+            label = labels[batch_id]
+            det_score = det_scores[batch_id]
+            
+            occupancy = [0 for i in range(n_detection)]
+            match_id = [1 for i in range( n_objects)]
+            con_loss = []
+            loc_loss = []
+            for i in range(n_objects):
+                overlap_sort, index = torch.sort(overlap[i], descending=True) #n_detection
+                for j, idx in enumerate(index):
+                    if label[i] == det_label[idx]:
+                        if occupancy[idx] == 0:
+                            occupancy[idx] == 1
+                            match_id[i] = idx
+                            con_loss.append(det_score[idx])
+                            loc_loss.append(overlap_sort[j])
+                            break
+            npositive = len(loc_loss)
+            #loc_loss.extend([0.5 for i in range(n_objects - npositive)]) #(漏检)
+            #loc_loss.extend([0.5 for i in range(n_detection - npositive)]) #(误检)
+            #con_loss.extend([0 for i in range(n_detection - len(con_loss))])
+            # compute loc and class loss
+            #assert len(con_loss) == len(loc_loss)
+            con_loss_all = (1 - torch.tensor(con_loss)).sum() / len(con_loss)
+            #con_loss_all = (-torch.log(torch.tensor(con_loss) + 1e-8)).sum() / len(con_loss)
+            loc_loss_all = (1 - torch.tensor(loc_loss)).sum() / len(loc_loss)
+
+        #return con_loss_all + self.alpha * loc_loss_all
+        return loc_loss_all
+    
+    
+    import torch
+
+
+
+def get_loss(loss_type, alpha):
+    CONFIG = {
+        "ccel": CCEL(alpha = alpha),
+        "ccql": CCQL(alpha = alpha),
+        }
+    return CONFIG[loss_type]
+
+
+def focal_loss(input_values, gamma, reduction="mean"):
+    """Computes the focal loss"""
+    p = torch.exp(-input_values)
+    loss = (1 - p) ** gamma * input_values
+
+    if reduction == "none":
+        return loss
+    elif reduction == "mean":
+        return loss.mean()
+    elif reduction == "sum":
+        return loss.sum()
+    else:
+        raise ValueError("Invalid reduction option. Use 'none', 'mean', or 'sum'")
+    
+def taylor_exp(input_values, alpha, reduction="mean"):
+    """Computes the focal loss"""
+    p = torch.exp(-input_values)
+    loss = alpha*input_values - (1-alpha)*(p+torch.pow(p,2)/2)
+    if reduction == "none":
+        return loss
+    elif reduction == "mean":
+        return loss.mean()
+    elif reduction == "sum":
+        return loss.sum()
+    else:
+        raise ValueError("Invalid reduction option. Use 'none', 'mean', or 'sum'.")
+
+def concave_exp_loss(input_values, gamma =1, reduction="mean"):
+    """Computes the focal loss"""
+    p = torch.exp(-input_values)
+    loss = torch.exp(gamma*p)
+    if reduction == "none":
+        return loss
+    elif reduction == "mean":
+        return loss.mean()
+    elif reduction == "sum":
+        return loss.sum()
+    else:
+        raise ValueError("Invalid reduction option. Use 'none', 'mean', or 'sum'.")
+    
+def ce_concave_exp_loss(input_values, alpha, beta):
+    p = torch.exp(-input_values)
+    loss = alpha * input_values - beta *torch.exp(p)
+    return loss
+
+class CCEL(nn.Module):
+    def __init__(self, alpha = 0.5, reduction='none'):
+        super(CCEL, self).__init__()
+        self.alpha = alpha
+        self.reduction_ = reduction
+    def forward(self, input, target):
+        # Calculate the cross-entropy loss without reduction
+        ce_loss = F.cross_entropy(input, target, reduction="none")
+        # Pass the calculated cross-entropy loss along with other parameters to your custom loss function
+        # Ensure that the 'reduction' argument is not passed again if it's already expected by ce_concave_exp_loss function
+        confidence = torch.exp(-ce_loss)
+        concave_loss = -torch.exp(confidence)
+        CCE_loss = self.alpha * ce_loss + (1 - self.alpha) * concave_loss
+        # Apply the beta scaling and reduce the loss as needed
+        if self.reduction_ == 'mean':
+            return CCE_loss.mean()
+        elif self.reduction_ == 'sum':
+            return CCE_loss.sum()
+        else:
+            # If reduction is 'none', just return the scaled loss
+            return CCE_loss
+
+
+class CCQL(nn.Module):
+    def __init__(self, alpha = 1,reduction='none'):
+        super(CCQL, self).__init__()
+        #assert gamma >= 1e-7
+        self.gamma = 2
+        self.alpha = alpha
+        self.reduction = reduction
+    def forward(self, input, target):
+        ce = F.cross_entropy(input, target, reduction="none")
+        return taylor_exp(ce, self.alpha, self.reduction)
+
+
+class RCCEL(nn.Module):
+    def __init__(self, beta=1):
+        super(RCCEL,self).__init__()
+        self.beta = 1
+    
+    def forward(self, input, target):
+        diff = torch.abs(input - target)
+        loss = torch.where(diff < self.beta, 0.5 * diff ** 2 / self.beta + (diff-1)**3, diff - 0.5 * self.beta)
+        return loss.mean()
