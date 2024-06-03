@@ -4,8 +4,7 @@ import torch.nn.functional as F
 from math import sqrt
 from itertools import product as product
 import torchvision
-from utils_tools.loss import get_loss
-from utils_tools.loss import RCCEL, REL 
+
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
@@ -565,8 +564,8 @@ class MultiBoxLoss(nn.Module):
     (1) a localization loss for the predicted locations of the boxes, and
     (2) a confidence loss for the predicted class scores.
     """
-    
-    def __init__(self, priors_cxcy, threshold=0.5, neg_pos_ratio=3, alpha=1., label_smoothing=False, factor=0.08, loss_type='ce', regression_loss='smoothl1'):
+
+    def __init__(self, priors_cxcy, threshold=0.5, neg_pos_ratio=3, alpha=1., label_smoothing=False, factor=0.08):
         super(MultiBoxLoss, self).__init__()
         self.priors_cxcy = priors_cxcy
         self.priors_xy = cxcy_to_xy(priors_cxcy)
@@ -574,24 +573,12 @@ class MultiBoxLoss(nn.Module):
         self.neg_pos_ratio = neg_pos_ratio
         self.alpha = alpha
 
-        #self.smooth_l1 = nn.L1Loss()  # *smooth* L1 loss in the paper; see Remarks section in the tutorial
-        if(regression_loss == 'smoothl1'):
-            self.smooth_l1 = nn.SmoothL1Loss(reduce=False)
-        elif regression_loss == 'l1':
-            self.smooth_l1 = nn.L1Loss()
-        elif regression_loss == 'rql':
-            self.smooth_l1 = RCCEL()
-        elif regression_loss == 'rel':
-            self.smooth_l1 = REL()
+        self.smooth_l1 = nn.L1Loss()  # *smooth* L1 loss in the paper; see Remarks section in the tutorial
+        
+        if(label_smoothing):
+            self.cross_entropy = nn.CrossEntropyLoss(reduce=False, label_smoothing=factor)
         else:
-            raise ValueError('Regression loss not supported')
-        if(loss_type == 'ce'):
-            if(label_smoothing):
-                self.criterion = nn.CrossEntropyLoss(reduce=False, label_smoothing=factor)
-            else:
-                self.criterion = nn.CrossEntropyLoss(reduce=False)
-        else:
-            self.criterion = get_loss(loss_type, 0.8)
+            self.cross_entropy = nn.CrossEntropyLoss(reduce=False)
 
     def forward(self, predicted_locs, predicted_scores, boxes, labels):
         """
@@ -659,8 +646,7 @@ class MultiBoxLoss(nn.Module):
 
         # Localization loss is computed only over positive (non-background) priors
         loc_loss = self.smooth_l1(predicted_locs[positive_priors], true_locs[positive_priors])  # (), scalar
-        loc_loss = loc_loss.sum(dim=-1).mean()
-        
+
         # Note: indexing with a torch.uint8 (byte) tensor flattens the tensor when indexing is across multiple dimensions (N & 8732)
         # So, if predicted_locs has the shape (N, 8732, 4), predicted_locs[positive_priors] will have (total positives, 4)
 
@@ -676,7 +662,7 @@ class MultiBoxLoss(nn.Module):
         n_hard_negatives = self.neg_pos_ratio * n_positives  # (N) #neg_pos_ratio:3, 负样本的数量
 
         # First, find the loss for all priors
-        conf_loss_all = self.criterion(predicted_scores.view(-1, n_classes), true_classes.view(-1))  # (N * 8732)
+        conf_loss_all = self.cross_entropy(predicted_scores.view(-1, n_classes), true_classes.view(-1))  # (N * 8732)
         conf_loss_all = conf_loss_all.view(batch_size, n_priors)  # (N, 8732)
 
         # We already know which priors are positive

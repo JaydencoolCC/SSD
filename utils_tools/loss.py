@@ -197,10 +197,6 @@ class AttackLoss(nn.Module):
 
         #return con_loss_all + self.alpha * loc_loss_all
         return loc_loss_all
-    
-    
-    import torch
-
 
 
 def get_loss(loss_type, alpha):
@@ -289,14 +285,28 @@ class CCQL(nn.Module):
     def forward(self, input, target):
         ce = F.cross_entropy(input, target, reduction="none")
         return taylor_exp(ce, self.alpha, self.reduction)
-
-
+    
 class RCCEL(nn.Module):
-    def __init__(self, beta=1):
+    def __init__(self, beta=1, alpha=1):
         super(RCCEL,self).__init__()
+        self.beta = 1
+        self.alpha = alpha
+    
+    #TODO modify the n
+    def forward(self, input, target, n=3):
+        diff = torch.abs(input - target)
+        loss = torch.where(diff < self.beta, (0.5 * diff ** 2 / self.beta) + (diff-1)**n, diff - 0.5 * self.beta)
+        loss = loss.sum(dim=-1).mean()
+        return loss
+    
+class REL(nn.Module):
+    def __init__(self, beta=1):
+        super(REL,self).__init__()
         self.beta = 1
     
     def forward(self, input, target):
         diff = torch.abs(input - target)
-        loss = torch.where(diff < self.beta, 0.5 * diff ** 2 / self.beta + (diff-1)**3, diff - 0.5 * self.beta)
-        return loss.mean()
+        loss = torch.where(diff < self.beta, 0.5 * diff ** 2 / self.beta - torch.exp(-(diff)) + torch.exp(torch.tensor(-1)), diff - 0.5 * self.beta)
+        loss = loss.sum(dim=-1).mean()
+        return loss
+    

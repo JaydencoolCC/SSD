@@ -14,22 +14,24 @@ from models.utils import array_tool as at
 from datasets_utils.dataset_tools import collate_fn
 from tqdm import tqdm
 class MetricAttack(PredictionScoreAttack):
-    def __init__(self, apply_softmax: bool, batch_size: int = 1, log_training: bool = True, metric_method = "Entropy"):
+    def __init__(self, apply_softmax: bool, batch_size: int = 1, log_training: bool = True, metric_method = "Entropy", loss_type='ce', ts=False):
         super().__init__('loss Attack')
         self.metric = self.get_metric_method(metric_method)
         self.batch_size = batch_size
         self.theta = 0.0
         self.apply_softmax = apply_softmax
         self.log_training = log_training
+        self.loss_type = loss_type
+        self.ts = ts
         
     def learn_attack_parameters(
         self, shadow_model: nn.Module, member_dataset: torch.utils.data.Dataset, non_member_dataset: torch.utils.data.Dataset
     ):
         # Gather entropy of predictions by shadow model
-        if isinstance(shadow_model, SSD300):
-            criterion = MultiBoxLoss(priors_cxcy=shadow_model.priors_cxcy).to(self.device)
+        if(self.ts):
+            criterion = MultiBoxLoss(priors_cxcy=shadow_model.model.priors_cxcy, loss_type=self.loss_type).to(self.device)
         else:
-            criterion = MultiBoxLoss(priors_cxcy=shadow_model.model.priors_cxcy).to(self.device)
+            criterion = MultiBoxLoss(priors_cxcy=shadow_model.priors_cxcy, loss_type=self.loss_type).to(self.device)
         
         shadow_model.to(self.device)
         shadow_model.eval()
@@ -83,10 +85,10 @@ class MetricAttack(PredictionScoreAttack):
     def predict_membership(self, target_model: nn.Module, dataset: Dataset):
         values = []
         scores = []
-        if isinstance(target_model, SSD300):
-            criterion = MultiBoxLoss(priors_cxcy=target_model.priors_cxcy).to(self.device)
+        if(self.ts):
+            criterion = MultiBoxLoss(priors_cxcy=target_model.model.priors_cxcy, loss_type=self.loss_type).to(self.device)
         else:
-            criterion = MultiBoxLoss(priors_cxcy=target_model.model.priors_cxcy).to(self.device)
+            criterion = MultiBoxLoss(priors_cxcy=target_model.priors_cxcy, loss_type=self.loss_type).to(self.device)
         target_model.eval()
         with torch.no_grad():
             loader = DataLoader(dataset, batch_size=self.batch_size, num_workers=4, collate_fn=collate_fn, pin_memory=True)
@@ -117,7 +119,13 @@ class MetricAttack(PredictionScoreAttack):
     
     def get_attack_model_prediction_scores(self, target_model: nn.Module, dataset: Dataset) -> torch.Tensor:
         values = []
-        criterion = MultiBoxLoss(priors_cxcy=target_model.model.priors_cxcy).to(self.device)
+        
+        if(self.ts):
+            criterion = MultiBoxLoss(priors_cxcy=target_model.model.priors_cxcy, loss_type=self.loss_type).to(self.device)
+        else:
+            criterion = MultiBoxLoss(priors_cxcy=target_model.priors_cxcy, loss_type=self.loss_type).to(self.device)
+            
+        target_model.eval()
         target_model.eval()
         with torch.no_grad():
             loader = DataLoader(dataset, batch_size=self.batch_size, num_workers=4, collate_fn=collate_fn, pin_memory=True)

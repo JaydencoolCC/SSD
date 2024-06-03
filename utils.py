@@ -5,7 +5,6 @@ import random
 import xml.etree.ElementTree as ET
 import torchvision.transforms.functional as FT
 
-#device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # Label map
 voc_labels = ('aeroplane', 'bicycle', 'bird', 'boat', 'bottle', 'bus', 'car', 'cat', 'chair', 'cow', 'diningtable',
@@ -52,20 +51,38 @@ def parse_annotation(annotation_path):
 def create_data_lists(voc07_path, voc12_path, output_folder):
     """
     Create lists of images, the bounding boxes and labels of the objects in these images, and save these to file.
+    test dataset is from voc07 
+    train dataset is from voc07 or voc12
 
     :param voc07_path: path to the 'VOC2007' folder
     :param voc12_path: path to the 'VOC2012' folder
     :param output_folder: folder where the JSONs must be saved
     """
-    voc07_path = os.path.abspath(voc07_path)
-    voc12_path = os.path.abspath(voc12_path)
-
+    data_list = []
+    data_name = ""
+    if voc07_path:
+        voc07_path = os.path.abspath(voc07_path)
+        data_list.append(voc07_path)
+        data_name = "voc07"
+    else:
+        raise ValueError("voc07_path is losted")
+    if voc12_path:
+        voc12_path = os.path.abspath(voc12_path)   
+        data_list.append(voc12_path) 
+        data_name = "voc12"
+    
+    if voc07_path and voc12_path in data_list:
+        data_name = "voc07+12"
+        
+    output_folder = os.path.join(output_folder, data_name)
+    os.makedirs(output_folder, exist_ok=True)
+    
     train_images = list()
     train_objects = list()
     n_objects = 0
 
     # Training data
-    for path in [voc07_path, voc12_path]:
+    for path in data_list:
 
         # Find IDs of images in training data
         with open(os.path.join(path, 'ImageSets/Main/trainval.txt')) as f:
@@ -419,7 +436,7 @@ def expand(image, boxes, filler):
     return new_image, new_boxes
 
 
-def random_crop(image, boxes, labels, difficulties):
+def random_crop(image, boxes, labels, difficulties=None):
     """
     Performs a random crop in the manner stated in the paper. Helps to learn to detect larger and partial objects.
 
@@ -442,7 +459,10 @@ def random_crop(image, boxes, labels, difficulties):
 
         # If not cropping
         if min_overlap is None:
-            return image, boxes, labels, difficulties
+            if(difficulties is not None):
+                return image, boxes, labels, difficulties
+            else:
+                return image, boxes, labels
 
         # Try up to 50 times for this choice of minimum overlap
         # This isn't mentioned in the paper, of course, but 50 is chosen in paper authors' original Caffe repo
@@ -494,15 +514,17 @@ def random_crop(image, boxes, labels, difficulties):
             # Discard bounding boxes that don't meet this criterion
             new_boxes = boxes[centers_in_crop, :]
             new_labels = labels[centers_in_crop]
-            new_difficulties = difficulties[centers_in_crop]
+            if difficulties is not None:
+                new_difficulties = difficulties[centers_in_crop]
 
             # Calculate bounding boxes' new coordinates in the crop
             new_boxes[:, :2] = torch.max(new_boxes[:, :2], crop[:2])  # crop[:2] is [left, top]
             new_boxes[:, :2] -= crop[:2]
             new_boxes[:, 2:] = torch.min(new_boxes[:, 2:], crop[2:])  # crop[2:] is [right, bottom]
             new_boxes[:, 2:] -= crop[:2]
-
-            return new_image, new_boxes, new_labels, new_difficulties
+            if difficulties is not None:
+                return new_image, new_boxes, new_labels, new_difficulties
+            return new_image, new_boxes, new_labels
 
 
 def flip(image, boxes):
@@ -626,6 +648,8 @@ def transform(image, boxes, labels, difficulties, action):
         # Flip image with a 50% chance
         if random.random() < 0.5:
             new_image, new_boxes = flip(new_image, new_boxes)
+        
+        #add 
 
     # Resize image to (300, 300) - this also converts absolute boundary coordinates to their fractional form
     new_image, new_boxes = resize(new_image, new_boxes, dims=(300, 300))
@@ -648,7 +672,7 @@ def adjust_learning_rate(optimizer, scale):
     """
     for param_group in optimizer.param_groups:
         param_group['lr'] = param_group['lr'] * scale
-    print("DECAYING learning rate.\n The new LR is %f\n" % (optimizer.param_groups[0]['lr'],))
+    print("DECAYING learning rate.\n The new LR is %f\n" % (optimizer.param_groups[1]['lr'],))
 
 
 def accuracy(scores, targets, k):
@@ -667,7 +691,7 @@ def accuracy(scores, targets, k):
     return correct_total.item() * (100.0 / batch_size)
 
 
-def save_checkpoint(epoch, model, optimizer, addition):
+def save_checkpoint(epoch, model, optimizer, addition, file_path):
     """
     Save model checkpoint.
 
@@ -679,7 +703,7 @@ def save_checkpoint(epoch, model, optimizer, addition):
              'model': model,
              'optimizer': optimizer}
     filename = addition + 'ssd300.pth.tar'
-    file_path = "checkpoint/" + filename
+    file_path = file_path + filename
     torch.save(state, file_path)
 
 

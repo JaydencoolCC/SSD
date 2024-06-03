@@ -3,19 +3,18 @@ import torch.backends.cudnn as cudnn
 import torch.optim
 import torch.utils.data
 import os
-os.environ["CUDA_VISIBLE_DEVICES"] = "4"
-from model import SSD300, MultiBoxLoss
+os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+from models.ssd import SSD300, MultiBoxLoss
 from datasets import PascalVOCDataset
 from utils import *
 from datasets_utils.dataset_tools import get_train_val_split, get_subsampled_dataset, print_attack_results, get_member_non_member_split, collate_fn
 import argparse
-import copy
 from opacus import PrivacyEngine
-
-
+from tqdm import tqdm
+from utils_tools.eval import evaluate
 # Parameters
 parser = argparse.ArgumentParser(description='PyTorch SSD Evaluation')
-parser.add_argument('--checkpoint', default='./checkpoint/checkpoint_ssd300.pth.tar', type=str, help='Checkpoint path')
+parser.add_argument('--checkpoint', default='./checkpoint/ssd/smoothl1/target_epochs_192newvoc07ssd300.pth.tar', type=str, help='Checkpoint path')
 parser.add_argument('--seed', default=42, type=int, help='Data folder')
 parser.add_argument('--model_type', default='target', type=str)
 parser.add_argument('--label_smoothing', action='store_true', default=False, help='Use label smoothing')
@@ -28,7 +27,14 @@ parser.add_argument("--delta", type=float, default=1e-5, metavar="D", help="Targ
 parser.add_argument('--dataset_name', default='voc07', type=str, help='voc07+12, voc07')
 parser.add_argument('--epochs', default=None, type=int)
 parser.add_argument('--data_folder', default='./data', type=str)
+parser.add_argument('--loss_type', default="ce", type=str)
+parser.add_argument('--alpha', default=None, type=float)
+parser.add_argument('--regression_loss', default='smoothl1', type=str)
+parser.add_argument('--load_model', default=False, type=bool)
+
 args = parser.parse_args()
+
+torch.set_num_threads(2)
 
 # Data parameters
 data_folder = os.path.join(args.data_folder, args.dataset_name) # folder with data files
@@ -44,7 +50,7 @@ checkpoint = None  # path to model checkpoint, None if none
 batch_size = 32  # batch size
 iterations = 120000  # number of iterations to train
 workers = 8  # number of workers for loading data in the DataLoader
-print_freq = 200  # print training status every __ batches
+print_freq = 32  # print training status every __ batches
 lr = 1e-3  # learning rate
 decay_lr_at = [80000, 100000]  # decay learning rate after these many iterations
 decay_lr_to = 0.1  # decay learning rate to this fraction of the existing learning rate
@@ -56,7 +62,6 @@ cudnn.benchmark = True
 
 
 checkpoint_file = args.checkpoint
-train_zero = True
 
 def main():
     """
@@ -65,7 +70,7 @@ def main():
     global start_epoch, label_map, epoch, checkpoint, decay_lr_at
 
     # Initialize model or load checkpoint
-    if train_zero:
+    if not args.load_model:
         start_epoch = 0
         if(args.dropout is not None):
             model = SSD300(n_classes=n_classes, dropout=args.dropout)
@@ -84,7 +89,8 @@ def main():
                     
         optimizer = torch.optim.SGD(params=[{'params': biases, 'lr': 2 * lr}, {'params': not_biases}],
                                     lr=lr, momentum=momentum, weight_decay=weight_decay)
-        criterion = MultiBoxLoss(priors_cxcy=model.priors_cxcy, label_smoothing=args.label_smoothing, factor=args.factor).to(device)
+        criterion = MultiBoxLoss(priors_cxcy=model.priors_cxcy, label_smoothing=args.label_smoothing, 
+                                 factor=args.factor, loss_type=args.loss_type, regression_loss=args.regression_loss).to(device)
 
     else:
         checkpoint = torch.load(checkpoint_file)
@@ -92,7 +98,9 @@ def main():
         print('\nLoaded target checkpoint from epoch %d.\n' % start_epoch)
         model = checkpoint['model']
         optimizer = checkpoint['optimizer']
-        criterion = MultiBoxLoss(priors_cxcy=model.priors_cxcy, label_smoothing=args.label_smoothing, factor=args.factor).to(device)
+        criterion = MultiBoxLoss(priors_cxcy=model.priors_cxcy, label_smoothing=args.label_smoothing, 
+                                 factor=args.factor, loss_type=args.loss_type, regression_loss=args.regression_loss).to(device)
+    
     # Move to default device
     model = model.to(device)
     
@@ -100,11 +108,13 @@ def main():
     # Custom dataloaders
     train_dataset = PascalVOCDataset(data_folder,
                                      split='train',
-                                     keep_difficult=keep_difficult)
+                                     keep_difficult=keep_difficult,
+                                     action='train')
     
     test_dataset = PascalVOCDataset(data_folder,
                                      split='test',
-                                     keep_difficult=keep_difficult)
+                                     keep_difficult=keep_difficult,
+                                     action='test')
     
 
     train_size = len(train_dataset) // 2
@@ -137,27 +147,28 @@ def main():
     print("train target dataset: {}".format(len(train_target)))
     print("test target dataset: {}".format(len(test_target)))
     
-    # Calculate total number of epochs to train and the epochs to decay learning rate at (i.e. convert iterations to epochs)
-    # To convert iterations to epochs, divide iterations by the number of iterations per epoch
-    # The paper trains for 120,000 iterations with a batch size of 32, decays after 80,000 and 100,000 iterations
     if(args.dataset_name == "voc07"):
         iterations = 30000
         decay_lr_at = [20000, 25000]
+        #decay_lr_at = [28000, 30000]   
+        # iterations = 20000
+        # decay_lr_at = [10000, 15000]
     elif(args.dataset_name == "voc07+12"):
-        decay_lr_at = [80000, 100000]
         iterations = 120000
+        decay_lr_at = [80000, 100000]
         
     epochs = iterations // (len(train_dataset) // 32)
     decay_lr_at = [it // (len(train_dataset) // 32) for it in decay_lr_at]
     
     # Epochs
     if(args.epochs is not None):
-        epochs=1
+        epochs= args.epochs
         
     print("Training %s model  epochs %d" % (args.model_type, epochs))
     print("decay_lr_at:", decay_lr_at)
+    print("loss_type: ", args.regression_loss)
     
-    addition = args.model_type + "_epochs_" + str(epochs) + "_" + args.dataset_name
+    addition = args.model_type + "_epochs_" + str(epochs) + "n4" +"_sumloss_"+ args.dataset_name
     if(args.label_smoothing):
         addition += "LS_" + str(args.factor) +"_"
     if(args.dropout):
@@ -166,8 +177,10 @@ def main():
         addition += "dp_" + str(args.delta)  
     if(args.model_type == "target"):
         trainDataLoader = trainDataLoader_target
+        testDataLoader = testDataLoade_target
     elif(args.model_type == "shadow"):
         trainDataLoader = trainDataLoader_shadow
+        testDataLoader = testDataLoade_shadow
     else:
         raise ValueError
     
@@ -184,10 +197,18 @@ def main():
     else:
         privacy_engine = None
             
-    train(trainDataLoader, model, criterion, optimizer, epochs, addition, privacy_engine)
+    train(trainDataLoader, model, criterion, optimizer, epochs, addition, privacy_engine, testDataLoader)
     
-def train(train_loader, model, criterion, optimizer, epochs, addition, privacy_engine):
-    file_path = "./checkpoint/ssd/"
+def train(train_loader, model, criterion, optimizer, epochs, addition, privacy_engine, testDataLoader):
+    if(args.loss_type == 'ce'):
+        file_path = "./checkpoint/ssd/" + args.loss_type +"/"
+    else:
+        file_path = "./checkpoint/ssd/" + args.loss_type +"/" +str(args.alpha) + "/"
+        
+    #TODO modify file path to save the model
+    file_path = "./checkpoint/ssd/" + args.regression_loss +"/" 
+        
+    os.makedirs(file_path, exist_ok=True)
     for epoch in range(start_epoch, epochs):
 
         # Decay learning rate at particular epochs
@@ -203,9 +224,13 @@ def train(train_loader, model, criterion, optimizer, epochs, addition, privacy_e
               privacy_engine=privacy_engine)
 
         # Save checkpoint
+        if(epoch>=100 and epoch % 50==0):
+            evaluate(testDataLoader, model)
+            
         if(epoch == epochs-1):
             save_checkpoint(epoch+1, model, optimizer, addition, file_path)
-
+            evaluate(testDataLoader, model)
+              
 
 def train_epoch(train_loader, model, criterion, optimizer, epoch, privacy_engine):
     """

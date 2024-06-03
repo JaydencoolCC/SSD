@@ -3,19 +3,18 @@ from pprint import PrettyPrinter
 import pickle
 import argparse
 import os
-os.environ["CUDA_VISIBLE_DEVICES"] = "7"
+os.environ["CUDA_VISIBLE_DEVICES"] = "2"
 from datasets import PascalVOCDataset
 from utils import *
 from utils_tools.utils import get_temp_calibrated_models
 from attack import ThresholdAttack, SalemAttack, EntropyAttack, MetricAttack, DetAttack
 from datasets_utils.dataset_tools import get_train_val_split, get_subsampled_dataset, print_attack_results, get_member_non_member_split, collate_fn
-import torch
-from models.ssd import SSD300, MultiBoxLoss
-from utils_tools.loss import AttackLoss
+import torch 
+from models.ssd import MultiBoxLoss
 # argparse
 parser = argparse.ArgumentParser(description='PyTorch SSD Evaluation')
-parser.add_argument('--checkpoint_target', default='./checkpoint/target_newssd300.pth.tar', type=str, help='Checkpoint path')
-parser.add_argument('--checkpoint_shadow', default='./checkpoint/shadow_newssd300.pth.tar', type=str, help='Checkpoint path')
+parser.add_argument('--checkpoint_target', default='./checkpoint/ssd/smoothl1/target_epochs_192sumlossvoc07ssd300.pth.tar', type=str, help='Checkpoint path')
+parser.add_argument('--checkpoint_shadow', default='./checkpoint/ssd/smoothl1/shadow_epochs_192sumlossvoc07ssd300.pth.tar', type=str, help='Checkpoint path')
 parser.add_argument('--batch_size', default=64, type=int, help='Batch size for evaluation')
 parser.add_argument('--workers', default=4, type=int, help='Number of workers used in dataloading')
 parser.add_argument('--keep_difficult', default=True, type=bool, help='Keep difficult ground truth objects in evaluation')
@@ -25,9 +24,10 @@ parser.add_argument('--action', default='test', type=str, help='train or test')
 parser.add_argument('--seed', default=42, type=int, help='seed')
 parser.add_argument('--use_temp', action='store_true', help='use temperature scaling')
 parser.add_argument('--temp_value', default=5, type=float, help='temperature value')
-parser.add_argument('--dataset_name', default='voc07+12', type=str, help='voc07+12, voc07')
+parser.add_argument('--dataset_name', default='voc07', type=str, help='voc07+12, voc07')
 parser.add_argument('--data_folder', default='./data', type=str, help='Data folder')
-
+parser.add_argument('--loss_type', default='ce', type=str)
+parser.add_argument('--regression_loss', default='smoothl1', type=str)
 args = parser.parse_args()
 
 # Good formatting when printing the APs for each class and mAP
@@ -113,10 +113,21 @@ def evaluate(test_loader, model, model_target, model_shadow):
     :param test_loader: DataLoader for test data
     :param model: model
     """
-
+    if args.use_temp:
+        model_target, model_shadow = get_temp_calibrated_models(
+            target_model=model_target,
+            shadow_model=model_shadow,
+            non_member_target=non_member_target,
+            non_member_shadow=non_member_shadow,
+            temp_value=args.temp_value
+        )
+        
     # Make sure it's in eval mode
-    model.eval()
-    criterion = MultiBoxLoss(priors_cxcy=model.priors_cxcy).to(device)
+    model_target.eval()
+    if(args.use_temp):
+        criterion = MultiBoxLoss(priors_cxcy=model_target.model.priors_cxcy, loss_type=args.loss_type, regression_loss=args.regression_loss).to(device)
+    else:
+        criterion = MultiBoxLoss(priors_cxcy=model_target.priors_cxcy, loss_type=args.loss_type, regression_loss=args.regression_loss).to(device)
     
     # Lists to store detected and true boxes, labels, scores
     det_boxes = list()
@@ -126,19 +137,25 @@ def evaluate(test_loader, model, model_target, model_shadow):
     true_labels = list()
     true_difficulties = list()  # it is necessary to know which objects are 'difficult', see 'calculate_mAP' in utils.py
     loss_sample = []
-    iou_sample = []
     with torch.no_grad():
         # Batches
         for i, (images, boxes, labels, difficulties) in enumerate(tqdm(test_loader, desc='Evaluating')):
             images = images.to(device)  # (N, 3, 300, 300)
 
             # Forward prop.
-            predicted_locs, predicted_scores = model(images)
+            predicted_locs, predicted_scores = model_target(images)
 
             # Detect objects in SSD output
-            det_boxes_batch, det_labels_batch, det_scores_batch = model.detect_objects(predicted_locs, predicted_scores,
+            if(args.use_temp):
+                det_boxes_batch, det_labels_batch, det_scores_batch = model_target.model.detect_objects(predicted_locs, predicted_scores,
+                                                                                       min_score=0.2, max_overlap=0.45,
+                                                                                       top_k=200) #
+                
+            else:
+                det_boxes_batch, det_labels_batch, det_scores_batch = model_target.detect_objects(predicted_locs, predicted_scores,
                                                                                        min_score=0.01, max_overlap=0.45,
                                                                                        top_k=200)
+                
             # Evaluation MUST be at min_score=0.01, max_overlap=0.45, top_k=200 for fair comparision with the paper's results and other repos
 
             # Store this batch's results for mAP calculation
@@ -153,45 +170,25 @@ def evaluate(test_loader, model, model_target, model_shadow):
             true_labels.extend(labels)
             true_difficulties.extend(difficulties)
             
-            # det_boxes, det_labels, det_scores = model.detect_objects(predicted_locs, predicted_scores, min_score=0.2,
-            #                                                  max_overlap=0.5, top_k=200)
-            #loss = criterion(det_boxes, det_scores, det_labels, boxes, labels)  # scalar  
-            #loss = criterion(det_boxes_batch, det_scores_batch, det_labels_batch, boxes, labels)  # scalar            
             loss = criterion(predicted_locs, predicted_scores, boxes, labels)  # scalar            
                       
-            #print("loss: ", loss)
             loss_sample.append(loss.cpu().item())
-            
-            #APs, mAP,iou= calculate_attack(det_boxes_batch, det_labels_batch, det_scores_batch, boxes, labels, difficulties)
-            
-            #print('\nMean Average Precision (mAP): %.3f' % mAP)
             
         mAP = 0
         APs = 0
         # Calculate mAP
         APs, mAP = calculate_mAP(det_boxes, det_labels, det_scores, true_boxes, true_labels, true_difficulties)
-        #results = calculate_gt(det_boxes, det_labels, det_scores, true_boxes, true_labels, true_difficulties)
-        #write_to_file(results)
-        #write results to f   
-    # Print AP for each class
-    loss_to_file(iou_sample)
+        loss_to_file(loss_sample)
     pp.pprint(APs)
     print('\nMean Average Precision (mAP): %.3f' % mAP)
     
-#def attack():
-    if args.use_temp:
-        model_target, model_shadow = get_temp_calibrated_models(
-            target_model=model_target,
-            shadow_model=model_shadow,
-            non_member_target=non_member_target,
-            non_member_shadow=non_member_shadow,
-            temp_value=args.temp_value
-        )
 
+        
+    ts_flag = True if args.use_temp else False    
     attacks = [
             #SalemAttack(apply_softmax=False, batch_size=64, k=218300, log_training=True),
             #ThresholdAttack(apply_softmax= False, batch_size=64),
-            MetricAttack(apply_softmax=False, batch_size=1),
+            MetricAttack(apply_softmax=False, batch_size=1, ts=ts_flag),
             #DetAttack(apply_softmax=False, batch_size=1)
             #EntropyAttack(apply_softmax=False, batch_size=1)
             ]
@@ -220,10 +217,10 @@ def write_to_file(results):
         pickle.dump(results, file)
 
 def loss_to_file(loss):
-    file = args.split + '_loss.pkl'
+    file = args.split + 'smtmp_sumloss.pkl'
     with open(file, 'wb') as file:
         pickle.dump(loss,file)
-        
+
 if __name__ == '__main__':
     member_target_loader = torch.utils.data.DataLoader(member_target, batch_size=1, shuffle=False,
                                            collate_fn=collate_fn, num_workers=workers,
@@ -251,4 +248,4 @@ if __name__ == '__main__':
         evaluate(non_member_target_loader, model_target, model_target, model_shadow)
     else:
         raise ValueError("Invalid data_type: " + args.split)
-        
+    

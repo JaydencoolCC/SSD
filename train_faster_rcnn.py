@@ -1,9 +1,8 @@
-import matplotlib
 from tqdm import tqdm
 import os
-os.environ["CUDA_VISIBLE_DEVICES"] = "5"
+os.environ["CUDA_VISIBLE_DEVICES"] = "4"
 from models.faster_rcnn import opt
-from datasets_utils.dataset_rcnn import Dataset, TestDataset, VOCDataset
+from datasets_utils.dataset_rcnn import VOCDataset
 from models.faster_rcnn_vgg16 import FasterRCNNVGG16
 from example.trainer import FasterRCNNTrainer
 from models.utils import array_tool as at
@@ -14,10 +13,10 @@ import argparse
 
 parser = argparse.ArgumentParser(description='Faster RCNN')
 parser.add_argument('--model_type', default='target', type=str)
-parser.add_argument('--dataset_name', default='VOC2007+2012', type=str, help='VOC2007+2012, voc07')
+parser.add_argument('--dataset_name', default='VOC2007', type=str, help='VOC2007+2012, voc07')
 parser.add_argument('--train_size', default=8275, type=int)
 parser.add_argument('--test_size', default=2476, type=int)
-parser.add_argument('--load_path', default='None', type=str)
+parser.add_argument('--load_path', default=None, type=str)
 parser.add_argument('--epochs', default=None, type=int)
 args = parser.parse_args()
 
@@ -29,7 +28,7 @@ torch.set_num_threads(2)
 def eval(dataloader, faster_rcnn, test_num=10000):
     pred_bboxes, pred_labels, pred_scores = list(), list(), list()
     gt_bboxes, gt_labels, gt_difficults = list(), list(), list()
-    for ii, (imgs, sizes, gt_bboxes_, gt_labels_, gt_difficults_) in tqdm(enumerate(dataloader)):
+    for ii, (imgs, sizes, gt_bboxes_, gt_labels_, gt_difficults_) in enumerate(tqdm(dataloader)):
         sizes = [sizes[0][0].item(), sizes[1][0].item()]
         pred_bboxes_, pred_labels_, pred_scores_ = faster_rcnn.predict(imgs, [sizes])
         gt_bboxes += list(gt_bboxes_.numpy())
@@ -114,7 +113,7 @@ def train(**kwargs):
     print('model construct completed')
     trainer = FasterRCNNTrainer(faster_rcnn).cuda()
     
-    addition = args.model_type + '_epoch_' + str(epochs) + '_%s'%args.dataset_name
+    addition = args.model_type + '_epoch_' + str(epochs) + '_%s'%args.dataset_name + 'new'
     if(args.model_type == "target"):
         trainDataLoader = trainDataLoader_target
         testDataLoader = testDataLoade_target
@@ -148,6 +147,9 @@ def train(**kwargs):
 
         if eval_result['map'] > best_map:
             best_map = eval_result['map']
+            addition_best = addition + "best"
+            save_path = trainer.save(addition=addition_best, epoch=epoch+1)
+            
         if epoch in decay_lr_epoch:
             trainer.faster_rcnn.scale_lr(opt.lr_decay)
             lr_ = lr_ * opt.lr_decay
